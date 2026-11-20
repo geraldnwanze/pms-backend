@@ -49,11 +49,13 @@ return [
         'expenses' => ['view' => $allStaff, 'manage' => ['admin', 'owner', 'manager', 'finance']],
         'vendors' => ['view' => $allStaff, 'manage' => ['admin', 'manager', 'finance']],
         'inspections' => ['view' => $allStaff, 'manage' => ['admin', 'owner', 'manager', 'maintenance']],
-        'meters' => ['view' => $allStaff, 'manage' => ['admin', 'owner', 'manager']],
+        // A tenant may read the meters of the unit they rent (CrudService narrows them to it) — never change or bill one.
+        'meters' => ['view' => $everyone, 'manage' => ['admin', 'owner', 'manager']],
         'listings' => ['view' => $everyone, 'manage' => ['admin', 'owner', 'manager', 'agent']],
         'leads' => ['view' => $allStaff, 'manage' => ['admin', 'manager', 'agent']],
         'documents' => ['view' => $everyone, 'manage' => ['admin', 'owner', 'manager', 'finance', 'tenant']],
-        'notifications' => ['view' => $withUser, 'manage' => $withUser],
+        // Clients only read and mark-read their own; the server creates them. Free-form creation would let anyone push a message (and link) to any user or role.
+        'notifications' => ['view' => $withUser, 'manage' => ['admin']],
         'notices' => ['view' => $withUser, 'manage' => ['admin', 'owner', 'manager', 'finance', 'agent', 'maintenance']],
         'messages' => ['view' => $withUser, 'manage' => $withUser],
         'audit' => ['view' => ['admin', 'finance'], 'manage' => []],

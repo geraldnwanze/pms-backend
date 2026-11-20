@@ -51,6 +51,7 @@ class MembershipService
 
         $email = Str::lower(trim($email));
         abort_unless(in_array($role, self::ROLES, true), 422, 'Unknown role.');
+        $this->assertCanChangeOwners($actor, $property, $role);
 
         $existing = PropertyMember::query()
             ->where('propertyId', $propertyId)
@@ -79,7 +80,8 @@ class MembershipService
 
         $this->audit->record($actor, 'create', 'PropertyMember', $member->id, "Invited {$email} as {$role} to {$property->name}");
 
-        if ($invitee) {
+        // An unverified account must not learn the property, inviter or role: it only gets the email.
+        if ($invitee?->hasVerifiedEmail()) {
             $this->notifications->push([
                 'kind' => 'system',
                 'title' => 'Property invitation',
@@ -107,6 +109,7 @@ class MembershipService
 
         /** @var PropertyMember $member */
         $member = PropertyMember::query()->where('propertyId', $propertyId)->findOrFail($memberId);
+        $this->assertCanChangeOwners($actor, $property, $member->role);
 
         if ($member->role === 'owner' && $member->status === 'active') {
             $owners = PropertyMember::query()
@@ -122,9 +125,16 @@ class MembershipService
 
     // ---- Invitee side ---------------------------------------------------
 
-    /** @return array<int,array<string,mixed>> pending invitations for this user */
+    /**
+     * @return array<int,array<string,mixed>> pending invitations for this user — none until their email is verified,
+     *                                        since an invitation is addressed to an email, not to an account
+     */
     public function pendingFor(User $user): array
     {
+        if (! $user->hasVerifiedEmail()) {
+            return [];
+        }
+
         return $this->query($user)->where('status', 'invited')->get()
             ->map(fn (PropertyMember $m) => $this->present($m))->all();
     }
@@ -132,11 +142,14 @@ class MembershipService
     /** @return array<int,array<string,mixed>> every membership row touching this user */
     public function allFor(User $user): array
     {
-        return $this->query($user)->get()->map(fn (PropertyMember $m) => $this->present($m))->all();
+        return $this->query($user)
+            ->when(! $user->hasVerifiedEmail(), fn ($q) => $q->where('status', '!=', 'invited'))
+            ->get()->map(fn (PropertyMember $m) => $this->present($m))->all();
     }
 
     public function accept(User $user, string $memberId): PropertyMember
     {
+        $this->assertVerified($user);
         $member = $this->locateForUser($user, $memberId);
         abort_unless($member->status === 'invited', 422, 'This invitation is no longer pending.');
 
@@ -177,6 +190,7 @@ class MembershipService
 
     public function decline(User $user, string $memberId): PropertyMember
     {
+        $this->assertVerified($user);
         $member = $this->locateForUser($user, $memberId);
         abort_unless($member->status === 'invited', 422, 'This invitation is no longer pending.');
 
@@ -232,16 +246,38 @@ class MembershipService
         return $this->present($m);
     }
 
+    /**
+     * Rows that belong to this user. The email match only applies once the address is verified: until then anyone
+     * could register an address they do not own and be handed its invitations.
+     */
     private function query(User $user)
     {
         return PropertyMember::query()->where(function ($q) use ($user) {
-            $q->where('userId', $user->id)->orWhereRaw('lower(email) = ?', [Str::lower($user->email)]);
+            $q->where('userId', $user->id);
+            if ($user->hasVerifiedEmail()) {
+                $q->orWhereRaw('lower(email) = ?', [Str::lower($user->email)]);
+            }
         });
+    }
+
+    private function assertVerified(User $user): void
+    {
+        abort_unless($user->hasVerifiedEmail(), 403, 'Confirm your email address before responding to an invitation.');
     }
 
     private function locateForUser(User $user, string $memberId): PropertyMember
     {
         return $this->query($user)->findOrFail($memberId);
+    }
+
+    /** Ownership is only granted or taken away by an owner of the property or an admin — a manager can run the team, not hand out the keys. */
+    private function assertCanChangeOwners(User $actor, Property $property, string $role): void
+    {
+        if ($role !== 'owner' || $actor->isAdmin()) {
+            return;
+        }
+
+        abort_unless($actor->roleOnProperty($property->id) === 'owner', 403, 'Only an owner of this property can add or remove owners.');
     }
 
     private function assertCanManageTeam(User $actor, Property $property): void

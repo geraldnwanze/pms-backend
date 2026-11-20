@@ -32,7 +32,10 @@ class ApiExceptionRenderer
             $payload['file'] = $e->getFile().':'.$e->getLine();
         }
 
-        return response()->json($payload, $status);
+        // Keep headers the exception carries (e.g. Retry-After / X-RateLimit-* on a 429).
+        $headers = $e instanceof HttpExceptionInterface ? $e->getHeaders() : [];
+
+        return response()->json($payload, $status, $headers);
     }
 
     /** @return array{0:int,1:string,2:?array} */

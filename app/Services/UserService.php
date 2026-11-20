@@ -6,6 +6,7 @@ use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 class UserService extends CrudService
 {
@@ -37,12 +38,24 @@ class UserService extends CrudService
     {
         $data = parent::prepareForCreate($actor, $data);
         $data['password'] = Hash::make($data['password'] ?? 'password');
+        $data = array_diff_key($data, array_flip(self::VERIFICATION_COLUMNS)); // verification is earned, never supplied
 
         return $data;
     }
 
+    private const VERIFICATION_COLUMNS = ['emailVerifiedAt', 'emailVerifyTokenHash', 'emailVerifyExpiresAt'];
+
     protected function prepareForUpdate(User $actor, Model $record, array $data): array
     {
+        $data = array_diff_key($data, array_flip(self::VERIFICATION_COLUMNS));
+
+        // A different address has not been proven yet.
+        if (isset($data['email']) && Str::lower($data['email']) !== Str::lower((string) $record->email)) {
+            $data['emailVerifiedAt'] = null;
+            $data['emailVerifyTokenHash'] = null;
+            $data['emailVerifyExpiresAt'] = null;
+        }
+
         if (! empty($data['password'])) {
             $data['password'] = Hash::make($data['password']);
         } else {
@@ -59,6 +72,11 @@ class UserService extends CrudService
 
     protected function afterUpdate(User $actor, Model $record, array $data): void
     {
+        // Deactivating someone, or changing their password, signs them out everywhere.
+        if (($data['status'] ?? null) === 'inactive' || ! empty($data['password'])) {
+            $record->tokens()->delete();
+        }
+
         $action = array_key_exists('role', $data) ? 'permission-change' : 'edit';
         $this->audit->record($actor, $action, 'User', $record->id, "Updated {$record->name}");
     }

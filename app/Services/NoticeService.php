@@ -24,12 +24,27 @@ class NoticeService extends CrudService
 
     protected array $actorOnCreate = ['createdById'];
 
+    protected function prepareForCreate(User $user, array $data): array
+    {
+        $data = parent::prepareForCreate($user, $data);
+
+        // Who posted it, and when, is the server's to say.
+        $data['createdById'] = $user->id;
+        $data['createdAt'] = now()->toIso8601String();
+
+        return $data;
+    }
+
     protected function scopeQuery(Builder $query, User $user): Builder
     {
         $ids = $this->scope->visibleIds($user);
 
         if ($ids !== null) {
-            $query->where(fn ($q) => $q->whereIn('propertyId', $ids)->orWhereNull('propertyId'));
+            // A notice with no property was posted to "everyone I work with": it reaches the poster's colleagues
+            // (people on the same properties) and, if an administrator posted it, everyone. Never other owners'.
+            $reach = array_merge($this->scope->colleagueIds($user) ?? [], User::query()->where('role', 'admin')->pluck('id')->all());
+            $query->where(fn ($q) => $q->whereIn('propertyId', $ids ?: ['__none__'])
+                ->orWhere(fn ($w) => $w->whereNull('propertyId')->whereIn('createdById', $reach)));
         }
 
         // Audience gate — a tenant only sees tenant/all notices, staff never sees owner-only.

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Concerns\ApiResponses;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\EntityResource;
+use App\Services\DepositService;
 use App\Services\ExpenseService;
 use App\Services\InvoiceService;
 use App\Services\LeaseService;
@@ -12,6 +13,7 @@ use App\Services\MessageService;
 use App\Services\MeterService;
 use App\Services\NotificationCrudService;
 use App\Services\TaskService;
+use App\Services\UtilityBillingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -50,6 +52,13 @@ class WorkflowController extends Controller
         return $this->ok(new EntityResource($this->invoices->cancel($request->user(), $id)), 'Invoice cancelled.');
     }
 
+    public function waiveLateFee(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate(['reason' => ['required', 'string', 'min:3', 'max:255']]);
+
+        return $this->ok(new EntityResource($this->invoices->waiveLateFee($request->user(), $id, $data['reason'])), 'Late fee waived.');
+    }
+
     public function setExpenseStatus(Request $request, string $id): JsonResponse
     {
         $data = $request->validate(['status' => ['required', 'in:pending,approved,rejected,paid']]);
@@ -65,6 +74,62 @@ class WorkflowController extends Controller
         ]);
 
         return $this->created(new EntityResource($this->meters->addReading($request->user(), $id, (float) $data['value'], $data['date'])), 'Reading recorded.');
+    }
+
+    public function deposit(Request $request, string $id): JsonResponse
+    {
+        return $this->ok(app(DepositService::class)->summary($request->user(), $id));
+    }
+
+    public function receiveDeposit(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate([
+            'amount' => ['required', 'integer', 'min:1'],
+            'method' => ['required', 'in:cash,bank-transfer,card,cheque,other'],
+            'reference' => ['nullable', 'string', 'max:100'],
+            'date' => ['nullable', 'date'],
+        ]);
+
+        return $this->created(app(DepositService::class)->receive($request->user(), $id, $data['amount'], $data['method'], $data['reference'] ?? null, $data['date'] ?? null), 'Deposit recorded.');
+    }
+
+    public function settleDeposit(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate([
+            'deductions' => ['array', 'max:20'],
+            'applyToArrears' => ['sometimes', 'boolean'],
+            'deductions.*.reason' => ['required', 'string', 'min:3', 'max:255'],
+            'deductions.*.amount' => ['required', 'integer', 'min:1'],
+        ]);
+
+        return $this->ok(app(DepositService::class)->settle($request->user(), $id, $data['deductions'] ?? [], (bool) ($data['applyToArrears'] ?? false)), 'Deposit settled.');
+    }
+
+    public function billMeter(Request $request, string $id): JsonResponse
+    {
+        return $this->created(new EntityResource(app(UtilityBillingService::class)->billMeter($request->user(), $id)), 'Utility bill issued.');
+    }
+
+    /** Bill every meter that is ready, or (`dryRun`) report what that would raise. */
+    public function billAllMeters(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'propertyIds' => ['sometimes', 'array'],
+            'propertyIds.*' => ['string'],
+            'dryRun' => ['sometimes', 'boolean'],
+        ]);
+
+        $result = app(UtilityBillingService::class)->billAll($request->user(), $data['propertyIds'] ?? null, (bool) ($data['dryRun'] ?? false));
+
+        return $this->ok($result, $result['dryRun'] ? 'Here is what would be billed.' : 'Utility bills issued.');
+    }
+
+    /** The latest "bill all ready meters" runs on the caller's properties. */
+    public function billRuns(Request $request): JsonResponse
+    {
+        $data = $request->validate(['limit' => ['sometimes', 'integer', 'min:1', 'max:50']]);
+
+        return $this->ok(app(UtilityBillingService::class)->recentRuns($request->user(), (int) ($data['limit'] ?? 10)));
     }
 
     public function toggleTask(Request $request, string $id): JsonResponse

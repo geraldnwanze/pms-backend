@@ -14,11 +14,13 @@ use App\Models\User;
 use App\Support\FrontendUrl;
 use App\Support\Recipients;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Mail\Mailable;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Payments and the receipt-verification workflow. Ports the reducers
@@ -51,6 +53,24 @@ class PaymentService extends CrudService
     protected function scopeQuery(Builder $query, User $user): Builder
     {
         return $this->scopeByProperty($query, $user);
+    }
+
+    // Payments are a ledger: they only enter through submit() and only change through the
+    // approve / reject / refund workflow. The generic REST routes must not write them directly.
+
+    public function create(User $user, array $data): Model
+    {
+        abort(405, 'Payments are recorded through /payments/submit.');
+    }
+
+    public function update(User $user, string $id, array $data): Model
+    {
+        abort(405, 'A payment changes only through approval, rejection or refund.');
+    }
+
+    public function delete(User $user, string $id): void
+    {
+        abort(405, 'Payments cannot be deleted.');
     }
 
     /**
@@ -307,25 +327,41 @@ class PaymentService extends CrudService
         }
     }
 
-    /** Decode a base64 data URL into a stored file; returns the relative path. */
+    /**
+     * Decode a base64 data URL into a stored file; returns the relative path. Only images and PDFs are
+     * accepted, judged by what the bytes actually are (not what the upload claims), so a script or web
+     * page can't be stored as a "receipt".
+     */
     private function storeReceipt(string $paymentId, ?string $dataUrl): ?string
     {
-        if (! $dataUrl || ! preg_match('#^data:(?<mime>[\w/+.-]+);base64,(?<data>.+)$#s', $dataUrl, $m)) {
+        if (! $dataUrl) {
             return null;
+        }
+
+        $invalid = fn (string $why) => ValidationException::withMessages(['receiptDataUrl' => [$why]]);
+
+        if (! preg_match('#^data:(?<mime>[\w/+.-]+);base64,(?<data>.+)$#s', $dataUrl, $m)) {
+            throw $invalid('The receipt must be a base64 data URL.');
         }
 
         $binary = base64_decode($m['data'], true);
-        if ($binary === false || strlen($binary) > 8 * 1024 * 1024) {
-            return null;
+        if ($binary === false) {
+            throw $invalid('The receipt file could not be read.');
+        }
+        if (strlen($binary) > 8 * 1024 * 1024) {
+            throw $invalid('The receipt must be 8 MB or smaller.');
         }
 
-        $ext = match ($m['mime']) {
-            'image/png' => 'png',
-            'image/jpeg', 'image/jpg' => 'jpg',
-            'image/webp' => 'webp',
-            'application/pdf' => 'pdf',
-            default => 'bin',
+        $ext = match (true) {
+            str_starts_with($binary, "\x89PNG\r\n\x1a\n") => 'png',
+            str_starts_with($binary, "\xFF\xD8\xFF") => 'jpg',
+            str_starts_with($binary, 'RIFF') && substr($binary, 8, 4) === 'WEBP' => 'webp',
+            str_starts_with($binary, '%PDF-') => 'pdf',
+            default => null,
         };
+        if ($ext === null) {
+            throw $invalid('The receipt must be a PNG, JPEG, WebP or PDF file.');
+        }
 
         $path = "receipts/{$paymentId}.{$ext}";
         Storage::disk('local')->put($path, $binary);

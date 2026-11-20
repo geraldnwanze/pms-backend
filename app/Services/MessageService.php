@@ -31,7 +31,7 @@ class MessageService extends CrudService
 
     protected function prepareForCreate(User $user, array $data): array
     {
-        $data['fromUserId'] ??= $user->id;
+        $data['fromUserId'] = $user->id;     // a message is always from whoever sends it
 
         return parent::prepareForCreate($user, $data);
     }

@@ -22,6 +22,15 @@ class ValidationRules
         $relaxed = [];
         foreach ($rules as $field => $set) {
             $set = is_string($set) ? explode('|', $set) : $set;
+
+            // Rules for the items inside an array (`items.*.area`) only run when the array is sent, so they keep
+            // their `required` on update — otherwise a partial edit could slip in a half-filled row.
+            if (str_contains((string) $field, '.*')) {
+                $relaxed[$field] = $set;
+
+                continue;
+            }
+
             $set = array_values(array_filter($set, fn ($r) => $r !== 'required'));
             array_unshift($set, 'sometimes');
             $relaxed[$field] = $set;
@@ -56,7 +65,10 @@ class ValidationRules
             'yearBuilt' => ['nullable', 'integer', 'min:1800', 'max:2100'],
             'renovationHistory' => ['nullable', 'string'],
             'amenities' => ['array'],
-            'photos' => ['array'],
+            // Colour hints, stored `/storage/...` URLs, or new `data:image/...` uploads
+            // (decoded and stored by PropertyService — see ImageStore).
+            'photos' => ['array', 'max:8'],
+            'photos.*' => ['string'],
             'acquisitionDate' => ['nullable', 'date'],
             'acquisitionValue' => ['nullable', 'integer', 'min:0'],
             'estimatedValue' => ['nullable', 'integer', 'min:0'],
@@ -71,6 +83,10 @@ class ValidationRules
             'buildingType' => ['nullable', 'string', 'max:60'],
             'floors' => ['nullable', 'integer', 'min:1'],
             'description' => ['nullable', 'string'],
+            // Interior photos: stored `/storage/...` URLs or new `data:image/...` uploads
+            // (decoded and stored by BuildingService — see ImageStore).
+            'photos' => ['nullable', 'array', 'max:12'],
+            'photos.*' => ['string'],
         ],
         'units' => [
             'buildingId' => ['required', 'string', 'exists:buildings,id'],
@@ -90,6 +106,10 @@ class ValidationRules
             'utilityCharge' => ['nullable', 'integer', 'min:0'],
             'otherCharges' => ['nullable', 'integer', 'min:0'],
             'meterIds' => ['array'],
+            // Unit photos: stored `/storage/...` URLs or new `data:image/...` uploads
+            // (decoded and stored by UnitService — see ImageStore).
+            'photos' => ['nullable', 'array', 'max:12'],
+            'photos.*' => ['string'],
         ],
         'tenants' => [
             'name' => ['required', 'string'],
@@ -202,8 +222,8 @@ class ValidationRules
             'type' => ['required', 'in:electricity,water,gas,other'],
             'meterNumber' => ['required', 'string'],
             'unitOfMeasure' => ['required', 'string'],
-            'previousReading' => ['nullable', 'integer', 'min:0'],
-            'currentReading' => ['nullable', 'integer', 'min:0'],
+            'previousReading' => ['nullable', 'numeric', 'min:0'],
+            'currentReading' => ['nullable', 'numeric', 'min:0'],
             'ratePerUnit' => ['nullable', 'numeric', 'min:0'],
             'history' => ['array'],
         ],

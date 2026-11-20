@@ -8,6 +8,7 @@ class Unit extends PmsModel
 
     protected $casts = [
         'meterIds' => 'array',
+        'photos' => 'array',
         'floor' => 'integer',
         'sizeSqm' => 'integer',
         'bedrooms' => 'integer',

@@ -17,6 +17,10 @@ class AdminController extends Controller
     {
         abort_unless($request->user()->isAdmin(), 403, 'Only an admin can reset the demo data.');
 
+        // The reset re-seeds from scratch, deleting every record. That is only ever acceptable on a demo/dev
+        // machine; on a live deployment even an admin must not be able to wipe the database with one request.
+        abort_unless(app()->environment('local', 'testing', 'development'), 404);
+
         app(DatabaseSeeder::class)->run();
 
         return $this->message('Demo data reset to its original state.');

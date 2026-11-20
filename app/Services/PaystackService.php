@@ -7,6 +7,7 @@ use App\Models\Payment;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Support\FrontendUrl;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -51,7 +52,7 @@ class PaystackService
      *
      * @return array{authorizationUrl:string,reference:string,payment:Payment}
      */
-    public function initialize(User $user, string $invoiceId, ?int $amount = null): array
+    public function initialize(User $user, string $invoiceId, ?int $amount = null, bool $saveCard = false): array
     {
         abort_unless($this->configured(), 503, 'Online payments are not configured.');
 
@@ -98,6 +99,7 @@ class PaystackService
             'submittedAt' => now()->toIso8601String(),
             'gateway' => 'paystack',
             'gatewayReference' => $reference,
+            'saveCard' => $saveCard,
         ]);
 
         $response = $this->api()->post('/transaction/initialize', [
@@ -111,6 +113,7 @@ class PaystackService
                 'invoiceId' => $invoice->id,
                 'invoiceCode' => $invoice->code,
                 'tenantId' => $invoice->tenantId,
+                'saveCard' => $saveCard,
             ],
         ]);
 
@@ -174,6 +177,15 @@ class PaystackService
             return $payment->refresh();
         }
 
+        // The tenant ticked "save this card for auto-debit": keep Paystack's reusable token (never the card).
+        if ($payment->saveCard) {
+            try {
+                app(AutoDebitService::class)->captureFromTransaction((string) $payment->tenantId, $data);
+            } catch (\Throwable $e) {
+                Log::warning('Auto-debit: could not save card', ['reference' => $reference, 'error' => $e->getMessage()]);
+            }
+        }
+
         // Amount guard — never credit more than was actually paid.
         $paidNaira = (int) round(((int) ($data['amount'] ?? 0)) / 100);
         if ($paidNaira > 0 && $paidNaira < $payment->amount) {
@@ -205,10 +217,123 @@ class PaystackService
         }
 
         try {
+            if (AutoDebitService::isSetupReference($reference)) {
+                app(AutoDebitService::class)->completeSetup($reference);
+
+                return;
+            }
+
             $this->verify($reference);
         } catch (\Throwable $e) {
             // Unknown reference (e.g. a transaction started elsewhere) — log, don't fail the webhook.
             Log::info('Paystack webhook: could not settle', ['reference' => $reference, 'error' => $e->getMessage()]);
+        }
+    }
+
+    // ---- Primitives used by auto-debit ------------------------------------------
+
+    /**
+     * Start a hosted checkout that isn't tied to an invoice (used for the card-setup charge).
+     *
+     * @param  array<string,mixed>  $metadata
+     * @param  array<int,string>|null  $channels
+     * @return array{ok:bool,authorizationUrl:?string,message:?string}
+     */
+    public function startTransaction(string $email, int $amountKobo, string $reference, array $metadata = [], ?array $channels = null): array
+    {
+        abort_unless($this->configured(), 503, 'Online payments are not configured.');
+
+        $response = $this->api()->post('/transaction/initialize', array_filter([
+            'email' => $email,
+            'amount' => $amountKobo,
+            'currency' => 'NGN',
+            'reference' => $reference,
+            'callback_url' => FrontendUrl::to((string) config('services.paystack.callback_path')),
+            'channels' => $channels,
+            'metadata' => $metadata,
+        ], fn ($v) => $v !== null));
+
+        $ok = $response->ok() && $response->json('status');
+
+        return [
+            'ok' => (bool) $ok,
+            'authorizationUrl' => $ok ? (string) $response->json('data.authorization_url') : null,
+            'message' => $response->json('message'),
+        ];
+    }
+
+    /** The raw Paystack transaction (verify endpoint), or null when Paystack can't be reached / doesn't know it. */
+    public function fetchTransaction(string $reference): ?array
+    {
+        $response = $this->api()->get("/transaction/verify/{$reference}");
+
+        return $response->ok() && $response->json('status') ? ($response->json('data') ?? []) : null;
+    }
+
+    /**
+     * Charge a saved card (authorization) without the customer present.
+     *
+     * Returns the gateway status ('success' | 'failed' | 'pending' | …). A transport failure
+     * (timeout, DNS) is reported as 'unknown' — NOT 'failed' — because the charge may have
+     * gone through; the caller must reconcile by verifying the reference later.
+     *
+     * @param  array<string,mixed>  $metadata
+     * @return array{status:string,message:?string,httpOk:bool,data:array<string,mixed>}
+     */
+    public function chargeAuthorization(string $email, int $amountKobo, string $authorizationCode, string $reference, array $metadata = []): array
+    {
+        abort_unless($this->configured(), 503, 'Online payments are not configured.');
+
+        try {
+            $response = $this->api()->post('/transaction/charge_authorization', [
+                'email' => $email,
+                'amount' => $amountKobo,
+                'currency' => 'NGN',
+                'authorization_code' => $authorizationCode,
+                'reference' => $reference,
+                'metadata' => $metadata,
+            ]);
+        } catch (ConnectionException $e) {
+            Log::warning('Paystack charge_authorization: no response', ['reference' => $reference, 'error' => $e->getMessage()]);
+
+            return ['status' => 'unknown', 'message' => 'No response from Paystack.', 'httpOk' => false, 'data' => []];
+        }
+
+        $data = $response->json('data') ?? [];
+
+        if (! $response->ok() || ! $response->json('status')) {
+            return ['status' => 'failed', 'message' => $response->json('message') ?? 'The charge was declined.', 'httpOk' => false, 'data' => $data];
+        }
+
+        return [
+            'status' => (string) ($data['status'] ?? 'unknown'),
+            'message' => $data['gateway_response'] ?? $response->json('message'),
+            'httpOk' => true,
+            'data' => $data,
+        ];
+    }
+
+    /** Best-effort full refund of a transaction. Returns whether Paystack accepted the request. */
+    public function refund(string $reference): bool
+    {
+        try {
+            $response = $this->api()->post('/refund', ['transaction' => $reference]);
+
+            return $response->ok() && (bool) $response->json('status');
+        } catch (\Throwable $e) {
+            Log::warning('Paystack refund failed', ['reference' => $reference, 'error' => $e->getMessage()]);
+
+            return false;
+        }
+    }
+
+    /** Best-effort: tell Paystack a saved card may no longer be charged. */
+    public function deactivateAuthorization(string $authorizationCode): void
+    {
+        try {
+            $this->api()->post('/customer/deactivate_authorization', ['authorization_code' => $authorizationCode]);
+        } catch (\Throwable $e) {
+            Log::warning('Paystack deactivate_authorization failed', ['error' => $e->getMessage()]);
         }
     }
 }

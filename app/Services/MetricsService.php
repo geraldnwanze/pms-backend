@@ -37,14 +37,14 @@ class MetricsService
         $invoices = $this->scoped(Invoice::query(), $propertyIds)->where('status', '!=', 'cancelled')
             ->get(['total', 'amountPaid', 'status']);
         $expenses = $this->scoped(Expense::query(), $propertyIds)->whereIn('status', ['approved', 'paid'])->sum('amount');
-        $leases = $this->scoped(Lease::query(), $propertyIds)->get(['status', 'tenantId']);
+        $leases = $this->scoped(Lease::query(), $propertyIds)->get(['status', 'tenantId', 'depositLedger']);
 
         $by = fn (string $status) => $units->where('status', $status)->count();
         $occupied = $by('occupied');
         $vacant = $by('available');
         $reserved = $by('reserved');
 
-        $monthlyExpectedRent = $units->where('status', 'occupied')->sum('rent');
+        $annualRentRoll = $units->where('status', 'occupied')->sum('rent');
         $expectedBilled = $invoices->sum('total');
         $collected = $invoices->sum('amountPaid');
         $outstanding = $invoices->sum(fn ($i) => max(0, $i->total - $i->amountPaid));
@@ -72,11 +72,12 @@ class MetricsService
             'totalTenants' => $activeTenants,
             'activeLeases' => $activeLeases,
             'expiringLeases' => $leases->where('status', 'expiring')->count(),
-            'monthlyExpectedRent' => (int) $monthlyExpectedRent,
+            'annualRentRoll' => (int) $annualRentRoll,
             'expectedBilled' => (int) $expectedBilled,
             'collected' => (int) $collected,
             'outstanding' => (int) $outstanding,
             'overdue' => (int) $overdue,
+            'depositsHeld' => (int) $leases->sum(fn ($l) => DepositService::heldOf($l->depositLedger)),   // the tenants' money, not income: kept out of every revenue figure
             'totalExpenses' => (int) $expenses,
             'netIncome' => (int) ($collected - $expenses),
             'openMaintenance' => $openMaintenance,
@@ -150,7 +151,7 @@ class MetricsService
                     'occupied' => $k['occupied'],
                     'vacant' => $k['vacant'],
                     'occupancyRate' => $k['occupancyRate'],
-                    'monthlyExpectedRent' => $k['monthlyExpectedRent'],
+                    'annualRentRoll' => $k['annualRentRoll'],
                     'collected' => $k['collected'],
                     'outstanding' => $k['outstanding'],
                     'collectionRate' => $k['collectionRate'],
@@ -196,8 +197,9 @@ class MetricsService
     /** Owner statement: income/expense for one owner over a period. */
     public function ownerStatement(string $ownerId, ?string $from, ?string $to): array
     {
-        $propertyIds = Property::query()
-            ->whereJsonContains('owners', [['ownerId' => $ownerId]])
+        // Filtered in PHP: JSON-containment on an array of objects is Postgres-only, and portfolios are small.
+        $propertyIds = Property::query()->get(['id', 'owners'])
+            ->filter(fn (Property $p) => collect($p->owners)->contains('ownerId', $ownerId))
             ->pluck('id')->all();
 
         $window = fn (Builder $q, string $col) => $q
@@ -272,12 +274,12 @@ class MetricsService
             ->toArray();
 
         return [
-            'byStatus' => collect(['open', 'assigned', 'in-progress', 'completed', 'verified', 'closed'])
+            'byStatus' => collect(['open', 'assigned', 'in-progress', 'completed', 'tenant-confirmed', 'verified', 'closed'])
                 ->mapWithKeys(fn ($s) => [$s => (int) ($byStatus[$s] ?? 0)])->all(),
             'byUrgency' => collect(['emergency', 'high', 'medium', 'low'])
                 ->mapWithKeys(fn ($s) => [$s => (int) ($byUrgency[$s] ?? 0)])->all(),
             'openCount' => (int) $q()->whereNotIn('status', ['verified', 'closed'])->count(),
-            'emergencyCount' => (int) ($byUrgency['emergency'] ?? 0),
+            'emergencyCount' => (int) $q()->whereNotIn('status', ['verified', 'closed'])->where('urgency', 'emergency')->count(),
             'items' => $items,
         ];
     }

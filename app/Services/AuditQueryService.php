@@ -22,6 +22,7 @@ class AuditQueryService extends CrudService
 
     protected function scopeQuery(Builder $query, User $user): Builder
     {
-        return $query;
+        // Administrators read the whole trail; everyone else only the entries about properties they belong to.
+        return $this->scopeByProperty($query, $user);
     }
 }

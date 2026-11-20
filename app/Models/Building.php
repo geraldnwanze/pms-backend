@@ -8,5 +8,6 @@ class Building extends PmsModel
 
     protected $casts = [
         'floors' => 'integer',
+        'photos' => 'array',
     ];
 }

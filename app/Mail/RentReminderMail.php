@@ -15,7 +15,7 @@ class RentReminderMail extends QueuedMarkdownMail
     protected function subjectLine(): string
     {
         return $this->payload['overdue']
-            ? "Rent overdue — invoice {$this->payload['code']}"
-            : "Rent due soon — invoice {$this->payload['code']}";
+            ? "Rent overdue: invoice {$this->payload['code']}"
+            : "Rent due soon: invoice {$this->payload['code']}";
     }
 }

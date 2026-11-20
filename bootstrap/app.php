@@ -1,6 +1,8 @@
 <?php
 
 use App\Exceptions\ApiExceptionRenderer;
+use App\Http\Middleware\DemoEnvironmentOnly;
+use App\Http\Middleware\EnsureAccountIsActive;
 use App\Http\Middleware\EnsureDemoUser;
 use App\Http\Middleware\ForceJsonResponse;
 use App\Http\Middleware\ResolveDemoUser;
@@ -21,17 +23,21 @@ return Application::configure(basePath: dirname(__DIR__))
     // guarded by Sanctum. Channel authorization lives in routes/channels.php.
     ->withBroadcasting(
         __DIR__.'/../routes/channels.php',
-        attributes: ['prefix' => 'api/v1', 'middleware' => ['api', 'auth:sanctum']],
+        attributes: ['prefix' => 'api/v1', 'middleware' => ['api', 'auth:sanctum', 'account.active']],
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        // Legacy demo auth (X-User-Id header) for the /api/* snapshot endpoints
-        // the current frontend still uses. The v1 API uses auth:sanctum instead.
         $middleware->api(prepend: [
             ForceJsonResponse::class,
-            ResolveDemoUser::class,
         ]);
 
+        // Legacy demo auth (X-User-Id header) for the old /api/* snapshot endpoints.
+        // These are opt-in per route group (see routes/api.php) and local-only —
+        // never global: a global resolver let any caller, even one holding a valid
+        // Sanctum token, override `$request->user()` on /api/v1 with a bare user id.
         $middleware->alias([
+            'account.active' => EnsureAccountIsActive::class,
+            'demo.only' => DemoEnvironmentOnly::class,
+            'demo.resolve' => ResolveDemoUser::class,
             'demo.auth' => EnsureDemoUser::class,
         ]);
     })

@@ -33,7 +33,7 @@ class AnalyticsController extends Controller
             ]);
 
         $leadFunnel = Lead::query()
-            ->when($propertyIds !== null, fn ($q) => $q->where(fn ($x) => $x->whereIn('propertyId', $propertyIds ?: ['__none__'])->orWhereNull('propertyId')))
+            ->when($propertyIds !== null, fn ($q) => $q->whereIn('propertyId', $propertyIds ?: ['__none__']))
             ->selectRaw('status, count(*) as n')->groupBy('status')->pluck('n', 'status');
 
         return $this->ok([

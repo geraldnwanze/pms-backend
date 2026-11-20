@@ -24,9 +24,19 @@ class TaskService extends CrudService
 
     protected function scopeQuery(Builder $query, User $user): Builder
     {
-        return in_array($user->role, ['admin', 'manager'], true)
-            ? $query
-            : $query->where('assignedToId', $user->id);
+        if ($user->isAdmin()) {
+            return $query;
+        }
+
+        // Everyone sees what is assigned to them; a manager also sees the to-dos of the properties they run —
+        // not other portfolios', and not other people's loose tasks.
+        if ($user->role === 'manager') {
+            $ids = $this->scope->visibleIds($user) ?? [];
+
+            return $query->where(fn ($q) => $q->where('assignedToId', $user->id)->orWhereIn('propertyId', $ids ?: ['__none__']));
+        }
+
+        return $query->where('assignedToId', $user->id);
     }
 
     public function toggle(User $user, string $id): TaskItem

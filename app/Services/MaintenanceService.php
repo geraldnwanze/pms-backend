@@ -103,6 +103,20 @@ class MaintenanceService extends CrudService
         );
     }
 
+    /**
+     * Where a work order may go from each status. `tenant-confirmed` is absent on purpose: only the
+     * tenant (see confirmDone) can put a job there, and it gates verification and the technician's payout.
+     */
+    private const TRANSITIONS = [
+        'open' => ['assigned', 'closed'],
+        'assigned' => ['assigned', 'in-progress', 'open', 'closed'],
+        'in-progress' => ['completed', 'assigned', 'closed'],
+        'completed' => ['in-progress', 'closed'],
+        'tenant-confirmed' => ['verified', 'in-progress', 'closed'],
+        'verified' => ['closed'],
+        'closed' => [],
+    ];
+
     protected function prepareForCreate(User $user, array $data): array
     {
         $data = parent::prepareForCreate($user, $data);
@@ -111,12 +125,28 @@ class MaintenanceService extends CrudService
             $this->assertMayAssign($user, $data['propertyId'] ?? null);
         }
 
+        // A request is born open (or assigned, if it was assigned on the spot) — never already verified or closed.
+        $data['status'] = ! empty($data['assignedToId']) ? 'assigned' : 'open';
+
+        // Costs are the technician's and manager's to record, not the person reporting the problem.
+        if ($user->isTenantOnly()) {
+            $data['materialsCost'] = 0;
+            $data['labourCost'] = 0;
+        }
+
         return $data;
     }
 
     protected function prepareForUpdate(User $user, Model $record, array $data): array
     {
         /** @var MaintenanceRequest $record */
+        abort_if(
+            array_key_exists('status', $data) && $data['status'] !== $record->status,
+            422,
+            'Change a work order\'s status through /maintenance/{id}/transition.',
+        );
+        unset($data['status']);
+
         if (array_key_exists('assignedToId', $data) && $data['assignedToId'] !== $record->assignedToId) {
             $this->assertMayAssign($user, $record->propertyId);
         }
@@ -210,9 +240,17 @@ class MaintenanceService extends CrudService
         $m = $this->locate($user, $id);
         $this->assertCanOperate($user, $m);
 
-        if (array_key_exists('assignedToId', $changes) && $changes['assignedToId'] !== $m->assignedToId) {
+        // Who the work goes to is decided here too, so the same rules as a plain edit apply: only an owner or
+        // manager may change it, and the person or vendor must really be part of this property's setup.
+        $reassigned = array_filter(
+            array_intersect_key($changes, array_flip(['assignedToId', 'vendorId'])),
+            fn ($value, $field) => $value !== null && (string) $value !== (string) $m->{$field},
+            ARRAY_FILTER_USE_BOTH,
+        );
+        if (array_key_exists('assignedToId', $changes) && $changes['assignedToId'] !== $m->assignedToId || $reassigned !== []) {
             $this->assertMayAssign($user, $m->propertyId);
         }
+        $this->assertLinksStayInProperty($user, $reassigned, $m->propertyId);
 
         if ($status === 'verified' && ! $user->isAdmin()) {
             abort_unless(
@@ -221,6 +259,16 @@ class MaintenanceService extends CrudService
                 'The tenant must confirm the work was done before it can be verified.',
             );
         }
+
+        $allowed = self::TRANSITIONS[$m->status] ?? [];
+        if ($status !== $m->status && $status === 'verified' && $user->isAdmin() && $m->status === 'completed') {
+            $allowed[] = 'verified';       // an administrator may sign off a completed job the tenant never confirmed
+        }
+        abort_unless(
+            $status === $m->status || in_array($status, $allowed, true),
+            422,
+            "A work order that is '{$m->status}' cannot move to '{$status}'.",
+        );
 
         $previous = $m->status;
         $previousAssignee = $m->assignedToId;

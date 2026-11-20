@@ -6,9 +6,9 @@ use App\Http\Concerns\ApiResponses;
 use App\Http\Controllers\Controller;
 use App\Mail\PasswordResetMail;
 use App\Models\Lease;
-use App\Models\PropertyMember;
 use App\Models\User;
 use App\Services\AuditService;
+use App\Services\EmailVerificationService;
 use App\Support\FrontendUrl;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -24,7 +24,7 @@ class AuthController extends Controller
 
     private const AVATAR_COLORS = ['#059669', '#0891b2', '#7c3aed', '#db2777', '#ea580c', '#2563eb', '#65a30d', '#c026d3', '#0d9488', '#d97706'];
 
-    public function __construct(private AuditService $audit) {}
+    public function __construct(private AuditService $audit, private EmailVerificationService $verification) {}
 
     /**
      * Register a plain account. New users hold the `user` role and see no
@@ -60,17 +60,20 @@ class AuthController extends Controller
             'lastLoginAt' => now()->format('Y-m-d\TH:i:s'),
         ]);
 
-        // Attach any invitations already waiting for this email address.
-        PropertyMember::query()
-            ->whereNull('userId')
-            ->where('email', $email)
-            ->update(['userId' => $user->id]);
+        // Invitations addressed to this email are NOT attached here: anyone can type any address into the
+        // sign-up form. They are handed over once the address is verified (EmailVerificationService).
+        $verifyToken = $this->verification->send($user);
 
         $token = $user->createToken($data['device_name'] ?? 'api')->plainTextToken;
 
         $this->audit->record($user, 'create', 'User', $user->id, "Registered account for {$user->name}");
 
-        return $this->ok(['token' => $token, 'user' => $user], 'Account created.', null, 201);
+        $payload = ['token' => $token, 'user' => $user->refresh()];
+        if ($verifyToken && app()->environment('local', 'testing', 'development')) {
+            $payload['verification'] = ['verify_token' => $verifyToken, 'verify_url' => $this->verification->url($user->email, $verifyToken)];
+        }
+
+        return $this->ok($payload, 'Account created. Check your email to confirm your address.', null, 201);
     }
 
     /**
@@ -86,7 +89,7 @@ class AuthController extends Controller
         $user = $broker->getUser(['email' => Str::lower($data['email'])]);
         $payload = null;
 
-        if ($user) {
+        if ($user && $user->status !== 'inactive') {
             // This is an API + SPA; there is no server-rendered reset page, so we
             // mint the token here and email a link to the SPA's /reset-password
             // route. In local/testing we also return it directly for convenience.
@@ -120,16 +123,25 @@ class AuthController extends Controller
             'password' => ['required', 'string', 'min:8', 'confirmed'],
         ]);
 
+        // A deactivated account can't be brought back by a reset link; answer exactly as for a bad token.
+        $account = Password::broker()->getUser(['email' => Str::lower($request->input('email'))]);
+        if ($account && $account->status === 'inactive') {
+            throw ValidationException::withMessages(['email' => [__(Password::INVALID_TOKEN)]]);
+        }
+
         $status = Password::reset(
             $request->only('email', 'password', 'password_confirmation', 'token'),
             function (User $user, string $password) {
                 $user->forceFill(['password' => Hash::make($password)])->save();
                 $user->tokens()->delete(); // sign out other sessions
+                $this->verification->markVerified($user); // the reset link went to their inbox, so they own it
             },
         );
 
         if ($status !== Password::PasswordReset) {
-            throw ValidationException::withMessages(['email' => [__($status)]]);
+            // One answer for every failure (unknown address, wrong token, expired token) so this endpoint
+            // can't be used to find out which addresses are registered.
+            throw ValidationException::withMessages(['email' => [__(Password::INVALID_TOKEN)]]);
         }
 
         return $this->message('Your password has been reset. You can now sign in.');
@@ -166,6 +178,10 @@ class AuthController extends Controller
             if (! $user || ! Hash::check($data['password'], (string) $user->password)) {
                 throw ValidationException::withMessages(['email' => ['These credentials do not match our records.']]);
             }
+        }
+
+        if ($user->status === 'inactive') {
+            throw ValidationException::withMessages(['email' => ['This account has been deactivated. Contact your administrator.']]);
         }
 
         $user->forceFill(['lastLoginAt' => now()->format('Y-m-d\TH:i:s')])->save();
@@ -215,6 +231,36 @@ class AuthController extends Controller
         }
 
         return $query->first();
+    }
+
+    /** Confirm an email address from the emailed link. Public — the token is the credential. */
+    public function verifyEmail(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'email' => ['required', 'email'],
+            'token' => ['required', 'string', 'max:128'],
+        ]);
+
+        $this->verification->verify($data['email'], $data['token']);
+
+        return $this->message('Your email address is confirmed.');
+    }
+
+    /** Send the signed-in user a fresh confirmation link. */
+    public function resendVerification(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if ($user->hasVerifiedEmail()) {
+            return $this->message('Your email address is already confirmed.');
+        }
+
+        $token = $this->verification->send($user);
+        $payload = $token && app()->environment('local', 'testing', 'development')
+            ? ['verify_token' => $token, 'verify_url' => $this->verification->url($user->email, $token)]
+            : null;
+
+        return $this->ok($payload, 'We sent you a new confirmation email.');
     }
 
     public function me(Request $request): JsonResponse

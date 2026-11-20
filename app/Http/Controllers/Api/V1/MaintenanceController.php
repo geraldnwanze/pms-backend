@@ -27,7 +27,7 @@ class MaintenanceController extends Controller
     public function transition(Request $request, string $id): JsonResponse
     {
         $data = $request->validate([
-            'status' => ['required', 'in:open,assigned,in-progress,completed,tenant-confirmed,verified,closed'],
+            'status' => ['required', 'in:open,assigned,in-progress,completed,verified,closed'],
             'assignedToId' => ['sometimes', 'nullable', 'string', 'exists:users,id'],
             'vendorId' => ['sometimes', 'nullable', 'string', 'exists:vendors,id'],
             'materialsCost' => ['sometimes', 'integer', 'min:0'],

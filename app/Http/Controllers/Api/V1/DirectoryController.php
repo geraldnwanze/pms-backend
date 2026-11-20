@@ -48,7 +48,7 @@ class DirectoryController extends Controller
                 'properties' => count($propertyIds),
                 'units' => $k['totalUnits'],
                 'occupancyRate' => $k['occupancyRate'],
-                'monthlyExpectedRent' => $k['monthlyExpectedRent'],
+                'annualRentRoll' => $k['annualRentRoll'],
                 'collected' => $k['collected'],
                 'outstanding' => $k['outstanding'],
                 'netIncome' => $k['netIncome'],

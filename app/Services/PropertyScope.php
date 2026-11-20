@@ -5,7 +5,9 @@ namespace App\Services;
 use App\Models\Lease;
 use App\Models\Property;
 use App\Models\PropertyMember;
+use App\Models\Tenant;
 use App\Models\User;
+use App\Models\Vendor;
 use Illuminate\Support\Collection;
 
 /**
@@ -76,12 +78,100 @@ class PropertyScope
 
         $propertyIds = $this->visibleIds($user);
 
-        return Lease::query()
+        $onLeases = Lease::query()
             ->when($propertyIds !== null, fn ($q) => $q->whereIn('propertyId', $propertyIds))
-            ->pluck('tenantId')
-            ->unique()
-            ->values()
-            ->all();
+            ->pluck('tenantId');
+
+        // A tenant registered under this portfolio is theirs to see before any lease exists (and after one ends) —
+        // otherwise the person who just registered them could not find them again.
+        $filedHere = Tenant::query()->whereIn('ownerId', $this->visibleOwnerIds($user) ?: ['__none__'])->pluck('id');
+
+        return $onLeases->merge($filedHere)->unique()->values()->all();
+    }
+
+    /**
+     * Owner portfolios a user may file records under: the owners of the properties they can see, plus
+     * themselves (a manager registering a tenant or vendor with no owner picks their own id). Null = admin.
+     *
+     * @return array<int,string>|null
+     */
+    public function visibleOwnerIds(User $user): ?array
+    {
+        $propertyIds = $this->visibleIds($user);
+
+        if ($propertyIds === null) {
+            return null;
+        }
+
+        return Property::query()->whereIn('id', $propertyIds)->pluck('owners')
+            ->flatMap(fn ($owners) => collect($owners)->pluck('ownerId'))
+            ->push($user->id)
+            ->when($user->ownerId, fn ($c) => $c->push($user->ownerId))
+            ->filter()->unique()->values()->all();
+    }
+
+    /**
+     * The people this user works with: active members of the properties they can see, plus themselves.
+     * "Portfolio-wide" records (no property) are shared with exactly these people. Null = admin (everyone).
+     *
+     * @return array<int,string>|null
+     */
+    public function colleagueIds(User $user): ?array
+    {
+        $propertyIds = $this->visibleIds($user);
+
+        if ($propertyIds === null) {
+            return null;
+        }
+
+        return PropertyMember::query()->whereIn('propertyId', $propertyIds ?: ['__none__'])->where('status', 'active')
+            ->whereNotNull('userId')->pluck('userId')->push($user->id)->unique()->values()->all();
+    }
+
+    /** Can this user see (or file records under) this tenant? */
+    public function canReachTenant(User $user, string $tenantId): bool
+    {
+        $visible = $this->visibleTenantIds($user);
+
+        if ($visible === null || in_array($tenantId, $visible, true)) {
+            return true;
+        }
+
+        $owner = Tenant::query()->whereKey($tenantId)->value('ownerId');
+        $owners = $this->visibleOwnerIds($user);
+
+        return $owner !== null && ($owners === null || in_array($owner, $owners, true));
+    }
+
+    /**
+     * May this actor attach this person (as assignee, inspector, agent) to a record? They must be
+     * an administrator or an active member of the record's property — or, when the record has no
+     * property, of any property the actor can see (which includes the actor themselves).
+     */
+    public function canReachUser(User $actor, string $userId, ?string $propertyId): bool
+    {
+        if (User::query()->whereKey($userId)->value('role') === 'admin') {
+            return true;
+        }
+
+        $members = PropertyMember::query()->where('userId', $userId)->where('status', 'active');
+
+        if ($propertyId !== null && $propertyId !== '') {
+            return $members->where('propertyId', $propertyId)->exists();
+        }
+
+        $visible = $this->visibleIds($actor);
+
+        return $members->when($visible !== null, fn ($q) => $q->whereIn('propertyId', $visible ?: ['__none__']))->exists();
+    }
+
+    /** May this actor use this vendor? Vendors belong to an owner's portfolio. */
+    public function canReachVendor(User $actor, string $vendorId): bool
+    {
+        $owners = $this->visibleOwnerIds($actor);
+        $owner = Vendor::query()->whereKey($vendorId)->value('ownerId');
+
+        return $owner !== null && ($owners === null || in_array($owner, $owners, true));
     }
 
     /** Tenant records a tenant-only user owns (for unit/lease narrowing). */

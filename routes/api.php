@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\SyncController;
 use App\Http\Controllers\Api\V1\AdminController;
 use App\Http\Controllers\Api\V1\AnalyticsController;
 use App\Http\Controllers\Api\V1\AuthController;
+use App\Http\Controllers\Api\V1\AutoDebitController;
 use App\Http\Controllers\Api\V1\BootstrapController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\DirectoryController;
@@ -37,10 +38,11 @@ Route::get('/health', fn () => ['ok' => true, 'time' => now()->toIso8601String()
 */
 Route::prefix('v1')->group(function () {
     Route::get('/auth/demo-users', [AuthController::class, 'demoUsers']);
-    Route::post('/auth/register', [AuthController::class, 'register']);
-    Route::post('/auth/login', [AuthController::class, 'login']);
-    Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword']);
-    Route::post('/auth/reset-password', [AuthController::class, 'resetPassword']);
+    Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:auth-register');
+    Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
+    Route::post('/auth/verify-email', [AuthController::class, 'verifyEmail'])->middleware('throttle:email-verify');
+    Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:auth-recovery');
+    Route::post('/auth/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:auth-recovery');
 
     // Payment-gateway webhooks — unauthenticated, signature-verified in the handler.
     Route::post('/webhooks/paystack', [WebhookController::class, 'paystack']);
@@ -48,9 +50,10 @@ Route::prefix('v1')->group(function () {
     // Proof-of-payment file — auth is the URL signature (see PaymentController@receiptLink).
     Route::get('/payments/{id}/receipt', [PaymentController::class, 'receipt'])->name('v1.payments.receipt');
 
-    Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware(['auth:sanctum', 'account.active'])->group(function () {
         Route::get('/auth/me', [AuthController::class, 'me']);
         Route::post('/auth/logout', [AuthController::class, 'logout']);
+        Route::post('/auth/email/resend', [AuthController::class, 'resendVerification'])->middleware('throttle:email-resend');
 
         Route::get('/bootstrap', BootstrapController::class);
         Route::post('/admin/reset', [AdminController::class, 'reset']);
@@ -75,6 +78,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/staff', [DirectoryController::class, 'staff']);
 
         Route::post('/reminders/overdue', [ReminderController::class, 'overdue']);
+        Route::post('/reminders/expiring-leases', [ReminderController::class, 'expiringLeases']);
 
         Route::get('/settings/organization', [SettingsController::class, 'organization']);
         Route::put('/settings/organization', [SettingsController::class, 'updateOrganization']);
@@ -85,6 +89,13 @@ Route::prefix('v1')->group(function () {
         Route::post('/payments/submit', [PaymentController::class, 'submit']);
         Route::post('/payments/paystack/initialize', [PaymentController::class, 'paystackInitialize']);
         Route::post('/payments/paystack/verify', [PaymentController::class, 'paystackVerify']);
+
+        // Tenant auto-debit: rent charged to a saved card on the due date.
+        Route::get('/auto-debit', [AutoDebitController::class, 'status']);
+        Route::post('/auto-debit/setup', [AutoDebitController::class, 'setup'])->middleware('throttle:10,1');
+        Route::delete('/auto-debit', [AutoDebitController::class, 'cancel']);
+        Route::get('/auto-debit/overview', [AutoDebitController::class, 'overview']);
+        Route::get('/auto-debit/invoices/{id}', [AutoDebitController::class, 'invoice']);
         Route::get('/payments/{id}/receipt-link', [PaymentController::class, 'receiptLink']);
         Route::post('/payments/{id}/approve', [PaymentController::class, 'approve']);
         Route::post('/payments/{id}/reject', [PaymentController::class, 'reject']);
@@ -104,9 +115,16 @@ Route::prefix('v1')->group(function () {
 
         Route::post('/leases/{id}/renew', [WorkflowController::class, 'renewLease']);
         Route::post('/leases/{id}/terminate', [WorkflowController::class, 'terminateLease']);
+        Route::get('/leases/{id}/deposit', [WorkflowController::class, 'deposit']);
+        Route::post('/leases/{id}/deposit/receive', [WorkflowController::class, 'receiveDeposit']);
+        Route::post('/leases/{id}/deposit/settle', [WorkflowController::class, 'settleDeposit']);
         Route::post('/invoices/{id}/cancel', [WorkflowController::class, 'cancelInvoice']);
+        Route::post('/invoices/{id}/waive-late-fee', [WorkflowController::class, 'waiveLateFee']);
         Route::post('/expenses/{id}/status', [WorkflowController::class, 'setExpenseStatus']);
         Route::post('/meters/{id}/readings', [WorkflowController::class, 'addMeterReading']);
+        Route::post('/meters/bill-all', [WorkflowController::class, 'billAllMeters']);
+        Route::get('/meters/bill-runs', [WorkflowController::class, 'billRuns']);
+        Route::post('/meters/{id}/bill', [WorkflowController::class, 'billMeter']);
         Route::post('/tasks/{id}/toggle', [WorkflowController::class, 'toggleTask']);
         Route::post('/messages/mark-thread-read', [WorkflowController::class, 'markThreadRead']);
         Route::post('/notifications/{id}/read', [WorkflowController::class, 'markNotificationRead']);
@@ -136,26 +154,29 @@ Route::prefix('v1')->group(function () {
 
 /*
 |--------------------------------------------------------------------------
-| Legacy demo API — snapshot bootstrap/sync used by the current SPA
-| (X-User-Id header auth). Kept until the frontend moves to v1.
+| Legacy demo API — passwordless snapshot bootstrap/sync (X-User-Id header
+| auth). The SPA now uses v1 only; this is local/testing/development-only
+| (404 elsewhere) and its resolver is scoped to this group, never global.
 |--------------------------------------------------------------------------
 */
-Route::get('/demo-users', [DemoAuthController::class, 'demoUsers']);
-Route::post('/login', [DemoAuthController::class, 'login']);
+Route::middleware(['demo.only', 'demo.resolve'])->group(function () {
+    Route::get('/demo-users', [DemoAuthController::class, 'demoUsers']);
+    Route::post('/login', [DemoAuthController::class, 'login']);
 
-Route::middleware('demo.auth')->group(function () {
-    Route::get('/me', [DemoAuthController::class, 'me']);
-    Route::post('/logout', [DemoAuthController::class, 'logout']);
+    Route::middleware('demo.auth')->group(function () {
+        Route::get('/me', [DemoAuthController::class, 'me']);
+        Route::post('/logout', [DemoAuthController::class, 'logout']);
 
-    Route::get('/bootstrap', DemoBootstrapController::class);
-    Route::put('/sync', SyncController::class);
-    Route::post('/reset', ResetController::class);
+        Route::get('/bootstrap', DemoBootstrapController::class);
+        Route::put('/sync', SyncController::class);
+        Route::post('/reset', ResetController::class);
 
-    foreach (Collections::SYNCABLE as $name) {
-        Route::get("/{$name}", [DemoEntityController::class, 'index'])->defaults('collection', $name);
-        Route::post("/{$name}", [DemoEntityController::class, 'store'])->defaults('collection', $name);
-        Route::get("/{$name}/{id}", [DemoEntityController::class, 'show'])->defaults('collection', $name);
-        Route::match(['put', 'patch'], "/{$name}/{id}", [DemoEntityController::class, 'update'])->defaults('collection', $name);
-        Route::delete("/{$name}/{id}", [DemoEntityController::class, 'destroy'])->defaults('collection', $name);
-    }
+        foreach (Collections::SYNCABLE as $name) {
+            Route::get("/{$name}", [DemoEntityController::class, 'index'])->defaults('collection', $name);
+            Route::post("/{$name}", [DemoEntityController::class, 'store'])->defaults('collection', $name);
+            Route::get("/{$name}/{id}", [DemoEntityController::class, 'show'])->defaults('collection', $name);
+            Route::match(['put', 'patch'], "/{$name}/{id}", [DemoEntityController::class, 'update'])->defaults('collection', $name);
+            Route::delete("/{$name}/{id}", [DemoEntityController::class, 'destroy'])->defaults('collection', $name);
+        }
+    });
 });

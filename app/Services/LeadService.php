@@ -26,16 +26,20 @@ class LeadService extends CrudService
 
     protected function scopeQuery(Builder $query, User $user): Builder
     {
-        if (in_array($user->role, ['admin', 'manager'], true)) {
+        if ($user->isAdmin()) {
             return $query;
         }
 
+        $ids = $this->scope->visibleIds($user) ?? [];
+
+        // An agent works their own leads — but only on properties they still belong to. A lead with no
+        // property is for administrators and whichever agent it is assigned to.
         if ($user->role === 'agent') {
-            return $query->where('agentId', $user->id);
+            return $query->where('agentId', $user->id)
+                ->where(fn ($q) => $q->whereIn('propertyId', $ids ?: ['__none__'])->orWhereNull('propertyId'));
         }
 
-        $ids = $this->scope->visibleIds($user);
-
-        return $ids === null ? $query : $query->whereIn('propertyId', $ids);
+        // Everyone else (managers included) sees the prospects of the properties they run — not other portfolios'.
+        return $query->whereIn('propertyId', $ids ?: ['__none__']);
     }
 }

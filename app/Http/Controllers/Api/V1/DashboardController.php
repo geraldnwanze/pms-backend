@@ -61,7 +61,7 @@ class DashboardController extends Controller
             'persona' => $persona,
             'kpis' => $metrics->portfolioKpis($propertyIds),
             'rentTrend' => $metrics->rentTrend($propertyIds, 8),
-            'recentActivity' => $this->recentActivity($user),
+            'recentActivity' => $this->recentActivity($user, $propertyIds),
         ];
 
         $payload += match ($persona) {
@@ -95,10 +95,15 @@ class DashboardController extends Controller
         return $this->ok($payload, 'Dashboard for '.$user->name.'.');
     }
 
-    /** Recent audit trail — everything for admin/finance, own actions for the rest. */
-    private function recentActivity(User $user): Collection
+    /**
+     * Recent audit trail — admin/finance see everything *on the properties in view*, the rest only their own actions.
+     *
+     * @param  array<int,string>|null  $propertyIds  null = no restriction (admin, unfiltered)
+     */
+    private function recentActivity(User $user, ?array $propertyIds): Collection
     {
         return AuditLog::query()
+            ->when($propertyIds !== null, fn ($q) => $q->whereIn('propertyId', $propertyIds ?: ['__none__']))
             ->when(! in_array($user->role, ['admin', 'finance'], true), fn ($q) => $q->where('userId', $user->id))
             ->orderByDesc('timestamp')->limit(12)
             ->get(['id', 'action', 'entity', 'entityId', 'userId', 'summary', 'timestamp']);

@@ -51,7 +51,7 @@ class MaintenancePayoutController extends Controller
     public function pay(Request $request, string $id): JsonResponse
     {
         $data = $request->validate([
-            'method' => ['sometimes', 'nullable', 'in:bank-transfer,cash,paystack-transfer'],
+            'method' => ['sometimes', 'nullable', 'in:bank-transfer,cash'],
             'reference' => ['sometimes', 'nullable', 'string', 'max:120'],
         ]);
 

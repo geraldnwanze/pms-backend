@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Support\FrontendUrl;
 use App\Support\Recipients;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 
@@ -29,6 +30,9 @@ class MaintenancePayoutService
     /** Work-order states from which a payout may be requested. */
     private const PAYABLE_STATES = ['tenant-confirmed', 'verified', 'closed'];
 
+    /** Property roles that may approve, reject and pay out (admins always may). */
+    private const PAYER_ROLES = ['owner', 'manager', 'finance'];
+
     /** Payout states that block a fresh request on the same work order. */
     private const OPEN_STATES = ['requested', 'approved', 'paid'];
 
@@ -38,21 +42,38 @@ class MaintenancePayoutService
         private NotificationService $notifications,
     ) {}
 
-    /** Rows visible to a user: those on their properties, plus their own. */
+    /**
+     * Rows visible to a user: everything on the properties they can pay out for (owner / manager / finance),
+     * plus their own. Other members of a property — a fellow technician, an agent — never see someone else's
+     * payout, which carries that person's bank details.
+     */
     public function visibleTo(User $user)
     {
         if ($user->isTenantOnly()) {
             return collect();
         }
 
-        $ids = $this->scope->visibleIds($user);
+        $payerOn = $user->isAdmin() ? null : $this->propertiesPayableBy($user);
 
         return MaintenancePayout::query()
-            ->when($ids !== null, fn ($q) => $q->where(
-                fn ($w) => $w->whereIn('propertyId', $ids ?: ['__none__'])->orWhere('staffId', $user->id)
+            ->when($payerOn !== null, fn ($q) => $q->where(
+                fn ($w) => $w->whereIn('propertyId', $payerOn ?: ['__none__'])->orWhere('staffId', $user->id)
             ))
             ->orderByDesc('requestedAt')
             ->get();
+    }
+
+    /** @return array<int,string> properties on which this user holds an active owner / manager / finance membership */
+    private function propertiesPayableBy(User $user): array
+    {
+        return PropertyMember::query()
+            ->where('userId', $user->id)
+            ->where('status', 'active')
+            ->whereIn('role', self::PAYER_ROLES)
+            ->pluck('propertyId')
+            ->unique()
+            ->values()
+            ->all();
     }
 
     public function request(User $user, string $maintenanceId, ?int $amount, ?string $note): MaintenancePayout
@@ -194,9 +215,24 @@ class MaintenancePayoutService
 
     public function markPaid(User $user, string $id, ?string $method, ?string $reference): MaintenancePayout
     {
-        $payout = $this->locateForPayer($user, $id);
-        $this->requireStatus($payout, 'approved');
+        $this->locateForPayer($user, $id);
 
+        // Lock the payout row and re-check its status under the lock, so two
+        // concurrent requests can't both pass the "approved" check and each
+        // create an expense (a double payment).
+        $payout = DB::transaction(function () use ($user, $id, $method, $reference) {
+            /** @var MaintenancePayout $payout */
+            $payout = MaintenancePayout::query()->whereKey($id)->lockForUpdate()->firstOrFail();
+            $this->requireStatus($payout, 'approved');
+
+            return $this->recordPayment($user, $payout, $method, $reference);
+        });
+
+        return $this->afterPaid($user, $payout);
+    }
+
+    private function recordPayment(User $user, MaintenancePayout $payout, ?string $method, ?string $reference): MaintenancePayout
+    {
         /** @var MaintenanceRequest|null $m */
         $m = MaintenanceRequest::query()->find($payout->maintenanceId);
         $staff = User::query()->find($payout->staffId);
@@ -225,6 +261,11 @@ class MaintenancePayoutService
             'expenseId' => $expenseId,
         ])->save();
 
+        return $payout;
+    }
+
+    private function afterPaid(User $user, MaintenancePayout $payout): MaintenancePayout
+    {
         $this->audit->record($user, 'edit', 'MaintenancePayout', $payout->id,
             "Paid {$payout->code} (₦".number_format($payout->amount).')');
         $this->notifications->push([
@@ -254,14 +295,15 @@ class MaintenancePayoutService
         return $payout;
     }
 
+    /** Admins, or someone who is an owner / manager / finance officer *on this property* — the global role alone is not enough. */
     private function assertCanPay(User $user, ?string $propertyId): void
     {
-        if ($user->isAdmin() || $user->role === 'finance') {
+        if ($user->isAdmin()) {
             return;
         }
 
         $role = $propertyId ? $user->roleOnProperty($propertyId) : null;
-        abort_unless(in_array($role, ['owner', 'manager'], true), 403,
+        abort_unless(in_array($role, self::PAYER_ROLES, true), 403,
             'Only a property owner, manager, finance or admin can act on payouts.');
     }
 
@@ -271,11 +313,15 @@ class MaintenancePayoutService
             "Payout {$payout->code} is '{$payout->status}'; this action needs '{$expected}'.");
     }
 
-    /** @return Collection<int,User> */
+    /** @return Collection<int,User> owners, managers and finance officers of this property (not finance staff elsewhere) */
     private function payers(string $propertyId)
     {
+        $financeIds = PropertyMember::query()
+            ->where('propertyId', $propertyId)->where('role', 'finance')->where('status', 'active')
+            ->pluck('userId')->filter()->all();
+
         return Recipients::propertyManagers($propertyId)
-            ->merge(User::query()->where('role', 'finance')->get())
+            ->merge(User::query()->whereIn('id', $financeIds ?: ['__none__'])->get())
             ->unique('id')
             ->values();
     }

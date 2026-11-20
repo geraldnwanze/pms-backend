@@ -3,7 +3,10 @@
 namespace App\Services;
 
 use App\Models\Lease;
+use App\Models\Listing;
+use App\Models\Meter;
 use App\Models\PmsModel;
+use App\Models\Unit;
 use App\Models\User;
 use App\Support\EntityRegistry;
 use App\Support\Rbac;
@@ -131,6 +134,8 @@ abstract class CrudService
     public function create(User $user, array $data): Model
     {
         $this->authorizeCollection($user, 'manage');
+        $this->assertPropertyVisible($user, $data);
+        $this->assertLinksStayInProperty($user, $data, $data['propertyId'] ?? null);
 
         $data = $this->prepareForCreate($user, $data);
         $data['id'] ??= $this->newId();
@@ -146,11 +151,112 @@ abstract class CrudService
         return $record->refresh();
     }
 
+    /**
+     * Holding the role to create a kind of record is not enough: it has to be on a property
+     * the actor belongs to. Without this, a manager of one property could raise invoices,
+     * leases and the like on someone else's.
+     *
+     * @param  array<string,mixed>  $data
+     */
+    protected function assertPropertyVisible(User $user, array $data): void
+    {
+        $propertyId = $data['propertyId'] ?? null;
+
+        if ($propertyId === null || $propertyId === '' || $user->isAdmin()) {
+            return;
+        }
+
+        abort_unless($this->scope->canSee($user, (string) $propertyId), 403, 'You can only do that on a property you belong to.');
+    }
+
+    /**
+     * A record that points at a unit or listing must point at one on its own property — otherwise
+     * a record filed under property A could pull in (and expose) B's units.
+     *
+     * @param  array<string,mixed>  $data
+     */
+    protected function assertLinksStayInProperty(User $user, array $data, ?string $propertyId): void
+    {
+        $unitId = $data['unitId'] ?? null;
+        if ($unitId !== null && $unitId !== '' && $propertyId !== null && $propertyId !== '') {
+            abort_unless(
+                Unit::query()->whereKey($unitId)->where('propertyId', $propertyId)->exists(),
+                422,
+                'That unit does not belong to this property.',
+            );
+        }
+
+        foreach (['assignedToId', 'inspectorId', 'agentId'] as $field) {
+            $person = $data[$field] ?? null;
+            if ($person !== null && $person !== '' && ! $user->isAdmin()) {
+                abort_unless($this->scope->canReachUser($user, (string) $person, $propertyId), 422, 'That person is not part of this property.');
+            }
+        }
+
+        $vendorId = $data['vendorId'] ?? null;
+        if ($vendorId !== null && $vendorId !== '' && ! $user->isAdmin()) {
+            abort_unless($this->scope->canReachVendor($user, (string) $vendorId), 422, 'That vendor is not part of your portfolio.');
+        }
+
+        $meterIds = array_values(array_filter((array) ($data['meterIds'] ?? [])));
+        if ($meterIds !== [] && $propertyId !== null && $propertyId !== '') {
+            abort_unless(
+                Meter::query()->whereIn('id', $meterIds)->where('propertyId', $propertyId)->count() === count(array_unique($meterIds)),
+                422,
+                'Those meters do not all belong to this property.',
+            );
+        }
+
+        $tenantId = $data['tenantId'] ?? null;
+        if ($tenantId !== null && $tenantId !== '' && ! $user->isAdmin()) {
+            abort_unless($this->scope->canReachTenant($user, (string) $tenantId), 422, 'That tenant is not part of your portfolio.');
+        }
+
+        $listingId = $data['listingId'] ?? null;
+        if ($listingId !== null && $listingId !== '') {
+            $listingProperty = Listing::query()->whereKey($listingId)->value('propertyId');
+            abort_unless(
+                $listingProperty !== null && $this->scope->canSee($user, $listingProperty)
+                    && ($propertyId === null || $propertyId === '' || $propertyId === $listingProperty),
+                422,
+                'That listing does not belong to this property.',
+            );
+        }
+    }
+
+    /**
+     * Updates may restate a record's property but never move it: re-pointing `propertyId` would
+     * let someone push a record into a portfolio they don't run (or out of one they do). A record
+     * with no property yet may be attached to one the actor belongs to.
+     *
+     * @param  array<string,mixed>  $data
+     */
+    protected function guardPropertyOnUpdate(User $user, Model $record, array $data): void
+    {
+        $current = $record->getAttribute('propertyId');
+
+        if (array_key_exists('propertyId', $data)) {
+            abort_if($current !== null && $data['propertyId'] !== $current, 422, 'This record cannot be moved to a different property.');
+            $this->assertPropertyVisible($user, $data);
+        }
+
+        // Only links that are being *changed* are checked: re-sending an unchanged value (the SPA PATCHes
+        // whole objects) must not fail just because, say, a member was revoked since it was set.
+        $changed = array_filter($data, fn ($value, $key) => ! in_array($key, self::LINK_FIELDS, true)
+            || (is_array($value) ? $value !== $record->getAttribute($key) : (string) $value !== (string) $record->getAttribute($key)),
+            ARRAY_FILTER_USE_BOTH);
+
+        $this->assertLinksStayInProperty($user, $changed, $data['propertyId'] ?? $current);
+    }
+
+    private const LINK_FIELDS = ['unitId', 'listingId', 'tenantId', 'assignedToId', 'inspectorId', 'agentId', 'vendorId', 'meterIds'];
+
     public function update(User $user, string $id, array $data): Model
     {
         $record = $this->locate($user, $id);
 
         $this->authorize($user, 'update', $record);
+        $this->guardPropertyOnUpdate($user, $record, $data);
 
         $data = $this->prepareForUpdate($user, $record, $data);
         $record->fill($data)->save();
@@ -200,7 +306,7 @@ abstract class CrudService
             }
 
             if ($this->tenantUnitScoped) {
-                $unitIds = Lease::query()->whereIn('tenantId', $tenantIds ?: ['__none__'])->pluck('unitId');
+                $unitIds = $this->tenantUnitIds($tenantIds);
                 $col = in_array('unitId', $this->model::columns(), true) ? 'unitId' : 'id';
 
                 return $query->whereIn($col, $unitIds);
@@ -210,6 +316,18 @@ abstract class CrudService
         $ids = $this->scope->visibleIds($user);
 
         return $ids === null ? $query : $query->whereIn($column, $ids);
+    }
+
+    /**
+     * The units a tenant-only user may see rows for, when the model is narrowed by unit rather than by tenant.
+     * By default every unit they hold or ever held a lease on; a model can narrow that (meters: only today's unit).
+     *
+     * @param  array<int,string>  $tenantIds
+     * @return \Illuminate\Support\Collection<int,string>
+     */
+    protected function tenantUnitIds(array $tenantIds)
+    {
+        return Lease::query()->whereIn('tenantId', $tenantIds ?: ['__none__'])->pluck('unitId');
     }
 
     protected function prepareForCreate(User $user, array $data): array
@@ -236,6 +354,20 @@ abstract class CrudService
     protected function prepareForUpdate(User $user, Model $record, array $data): array
     {
         return $data;
+    }
+
+    /**
+     * A record's property is fixed once created: re-pointing `propertyId` on an
+     * update would let someone move a building/unit into a portfolio they don't
+     * own (or out of one they do). Restating the current value is harmless.
+     */
+    protected function forbidReparenting(Model $record, array $data): void
+    {
+        abort_if(
+            array_key_exists('propertyId', $data) && $data['propertyId'] !== $record->getAttribute('propertyId'),
+            422,
+            'This record cannot be moved to a different property.',
+        );
     }
 
     protected function afterCreate(User $user, Model $record, array $data): void {}
@@ -296,9 +428,12 @@ abstract class CrudService
             return;
         }
 
-        $query->where(function (Builder $q) use ($term) {
+        // Case-insensitive contains. Postgres spells that ILIKE; SQLite's LIKE already ignores ASCII case.
+        $operator = $query->getConnection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
+
+        $query->where(function (Builder $q) use ($term, $operator) {
             foreach ($this->searchable as $column) {
-                $q->orWhere($column, 'ilike', "%{$term}%");
+                $q->orWhere($column, $operator, "%{$term}%");
             }
         });
     }
@@ -329,5 +464,13 @@ abstract class CrudService
         }
 
         $query->orderBy($column, $direction);
+
+        // Many rows can share a sort value (a day's invoices all have the same issue date). Without a unique tiebreaker the
+        // database may order those ties differently from one page to the next, so paging shows some rows twice and skips
+        // others. The primary key makes the order total and the same on every request.
+        $key = $query->getModel()->getQualifiedKeyName();
+        if ($column !== $query->getModel()->getKeyName()) {
+            $query->orderBy($key, 'asc');
+        }
     }
 }

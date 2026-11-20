@@ -20,6 +20,8 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        'emailVerifyTokenHash',
+        'emailVerifyExpiresAt',
         'created_at',
         'updated_at',
     ];
@@ -30,6 +32,20 @@ class User extends Authenticatable
      * UI labelling. `user` is the base: registered, but not yet on any property.
      */
     public const ROLE_PRECEDENCE = ['admin', 'owner', 'finance', 'manager', 'agent', 'maintenance', 'tenant', 'user'];
+
+    /** @var array<int,string> */
+    protected $appends = ['emailVerified'];
+
+    /** Whether this account has proven it controls its email address. */
+    public function hasVerifiedEmail(): bool
+    {
+        return filled($this->emailVerifiedAt);
+    }
+
+    public function getEmailVerifiedAttribute(): bool
+    {
+        return $this->hasVerifiedEmail();
+    }
 
     protected function casts(): array
     {
