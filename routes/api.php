@@ -124,6 +124,7 @@ Route::prefix('v1')->group(function () {
         Route::post('/meters/{id}/readings', [WorkflowController::class, 'addMeterReading']);
         Route::post('/meters/bill-all', [WorkflowController::class, 'billAllMeters']);
         Route::get('/meters/bill-runs', [WorkflowController::class, 'billRuns']);
+        Route::post('/meters/{id}/bill-preview', [WorkflowController::class, 'previewMeterBill']);
         Route::post('/meters/{id}/bill', [WorkflowController::class, 'billMeter']);
         Route::post('/tasks/{id}/toggle', [WorkflowController::class, 'toggleTask']);
         Route::post('/messages/mark-thread-read', [WorkflowController::class, 'markThreadRead']);

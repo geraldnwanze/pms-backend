@@ -69,7 +69,7 @@ class ReminderService
                 'title' => 'Rent overdue',
                 'body' => "Invoice {$inv->code} for ₦".number_format($outstanding)." is {$days} day(s) overdue. Please settle it.",
                 'forUserId' => $inv->tenantId,
-                'link' => '/portal/pay',
+                'link' => "/portal/bills/{$inv->id}",
             ]);
             $notified++;
 
@@ -81,7 +81,7 @@ class ReminderService
                     'outstanding' => '₦'.number_format($outstanding),
                     'overdue' => true,
                     'days' => $days,
-                    'portalUrl' => FrontendUrl::to('/portal/pay'),
+                    'portalUrl' => FrontendUrl::to("/portal/bills/{$inv->id}"),
                 ]));
                 $emailed++;
             }

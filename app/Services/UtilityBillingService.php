@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Mail\UtilityBillMail;
 use App\Models\Invoice;
 use App\Models\Lease;
 use App\Models\Meter;
@@ -11,9 +12,12 @@ use App\Models\Unit;
 use App\Models\User;
 use App\Models\UtilityBillRun;
 use App\Support\Dates;
+use App\Support\FrontendUrl;
+use App\Support\Recipients;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -33,6 +37,9 @@ class UtilityBillingService
 
     /** How long after a tenancy ends its last tenant is still the one billed for the unit's use (readings taken at move-out). */
     public const FINAL_BILL_DAYS = 60;
+
+    /** Who to email for each tenant, looked up once for a bulk run (null otherwise: each bill looks up its own tenant). */
+    private ?Collection $recipients = null;
 
     public function __construct(private AuditService $audit, private NotificationService $notifications) {}
 
@@ -93,6 +100,7 @@ class UtilityBillingService
         // Who holds each unit, and their names, looked up once for the whole run rather than once per unit.
         $holders = $this->holdersOf($byUnit->keys()->map(fn ($k) => (string) $k)->all(), $today);
         $tenantNames = Tenant::query()->whereIn('id', $holders->pluck('tenantId')->unique()->values())->pluck('name', 'id');
+        $this->recipients = $dryRun ? null : Recipients::tenantUsersByTenant($holders->pluck('tenantId')->all());
 
         foreach ($byUnit as $unitId => $meters) {
             $unitId = (string) $unitId;
@@ -142,6 +150,8 @@ class UtilityBillingService
                 ], $r['items']),
             ];
         }
+
+        $this->recipients = null;
 
         if (! $dryRun) {
             $this->recordBulkRun($user, $out, $propertyNames);
@@ -218,6 +228,59 @@ class UtilityBillingService
         abort_unless($r['invoice'], 422, $r['skipped'][0] ?? 'Nothing to bill on this meter.');
 
         return $r['invoice'];
+    }
+
+    /**
+     * What billing one meter would raise today, or why it could not be billed, without billing anything. `$reading` asks it
+     * as if the meter had just been read at that value (the reading dialog's "log this reading and bill"). The answer uses the
+     * same rules billUnit applies, so what staff are shown is what the invoice will say.
+     *
+     * @return array<string,mixed> `ok: true` with the invoice's figures, or `ok: false` with a `reason`
+     */
+    public function previewMeter(User $user, string $meterId, ?float $reading = null, ?Carbon $today = null): array
+    {
+        $meter = Meter::query()->findOrFail($meterId);
+        app(MeterService::class)->assertMayBill($user, $meter);
+        $today = ($today ?? Carbon::today())->copy()->startOfDay();
+
+        if (! $meter->unitId) {
+            return ['ok' => false, 'reason' => 'This meter is not attached to a unit, so there is no tenant to bill.'];
+        }
+        if ($reading !== null && $reading < (float) $meter->currentReading) {
+            return ['ok' => false, 'reason' => "The reading ({$reading}) is lower than the current reading ({$meter->currentReading})."];
+        }
+
+        $from = (float) $meter->billedUpTo();
+        $to = (float) ($reading ?? $meter->currentReading);
+        if ($to < $from) {
+            return ['ok' => false, 'reason' => "The reading ({$to}) is lower than what was last billed ({$from}); check the meter."];
+        }
+        if (abs($to - $from) < 0.0005) {
+            return ['ok' => false, 'reason' => 'Nothing to bill: no use has been read since the last bill.'];
+        }
+        if ((float) $meter->ratePerUnit <= 0) {
+            return ['ok' => false, 'reason' => 'No rate is set, so its use cannot be priced.'];
+        }
+
+        $lease = $this->responsibleLease($meter->unitId, $today);
+        if (! $lease) {
+            return ['ok' => false, 'reason' => 'This unit has no tenant at the moment, so there is nobody to bill.'];
+        }
+
+        $units = round($to - $from, 3);
+        $final = ! $lease->holdsUnitOn($today);
+
+        return [
+            'ok' => true,
+            'tenantName' => Tenant::query()->whereKey($lease->tenantId)->value('name') ?? 'the tenant',
+            'leaseCode' => $lease->code,
+            'issueDate' => $today->toDateString(),
+            'dueDate' => $today->copy()->addDays(self::DUE_DAYS)->toDateString(),
+            'from' => $from, 'to' => $to, 'units' => $units, 'rate' => (float) $meter->ratePerUnit,
+            'total' => (int) round($units * (float) $meter->ratePerUnit),
+            'final' => $final,
+            'endedOn' => $final ? $lease->endedOn($today) : null,
+        ];
     }
 
     /**
@@ -331,8 +394,30 @@ class UtilityBillingService
             'forUserId' => $invoice->tenantId,
             'link' => "/portal/bills/{$invoice->id}",
         ]));
+        $this->bestEffort(fn () => $this->emailBill($invoice, $final));
 
         return $result;
+    }
+
+    /** Tell the tenant by email, where they have a login: what is billed, when it is due, and a link straight to the bill. */
+    private function emailBill(Invoice $invoice, bool $final): void
+    {
+        $recipients = $this->recipients?->get($invoice->tenantId) ?? Recipients::tenantUsers($invoice->tenantId);
+        if ($recipients->isEmpty()) {
+            return;
+        }
+
+        Mail::to($recipients->all())->queue(new UtilityBillMail([
+            'code' => $invoice->code,
+            'dueDate' => Carbon::parse($invoice->dueDate)->toFormattedDateString(),
+            'total' => '₦'.number_format($invoice->total),
+            'final' => $final,
+            'lines' => collect($invoice->lineItems)->map(fn ($li) => [
+                'description' => (string) preg_replace('/ × ₦[\d,.]+$/u', '', (string) $li['description']),
+                'amount' => '₦'.number_format($li['amount']),
+            ])->all(),
+            'portalUrl' => FrontendUrl::to("/portal/bills/{$invoice->id}"),
+        ]));
     }
 
     /**

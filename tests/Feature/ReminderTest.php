@@ -6,6 +6,7 @@ use App\Mail\RentReminderMail;
 use App\Models\Notification;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Mail;
+use PHPUnit\Framework\AssertionFailedError;
 use Tests\PmsTestCase;
 
 class ReminderTest extends PmsTestCase
@@ -26,6 +27,43 @@ class ReminderTest extends PmsTestCase
         $this->assertStringContainsString('5 day(s) overdue', $body);
         $this->assertStringNotContainsString('-', explode('₦', $body)[1] ?? '');
         Mail::assertQueued(RentReminderMail::class, fn (RentReminderMail $m) => $m->hasTo('ada@tenant.test'));
+    }
+
+    public function test_an_overdue_reminder_links_straight_to_that_invoice(): void
+    {
+        $this->w->invoice->update(['dueDate' => '2026-11-06']);
+
+        $this->as($this->w->managerA)->postJson('/api/v1/reminders/overdue')->assertOk();
+
+        $id = $this->w->invoice->id;
+        $this->assertSame("/portal/bills/{$id}", Notification::query()->where('forUserId', 'ten_ada')->where('title', 'Rent overdue')->value('link'));
+        Mail::assertQueued(RentReminderMail::class, function (RentReminderMail $m) use ($id) {
+            $m->assertSeeInHtml(config('app.frontend_url')."/portal/bills/{$id}");
+
+            return true;
+        });
+    }
+
+    public function test_the_daily_command_links_due_soon_and_overdue_reminders_to_the_invoice(): void
+    {
+        $this->w->invoice->update(['dueDate' => '2026-11-14']);                                       // due in 3 days
+        $late = $this->w->invoice(['id' => 'inv_late', 'dueDate' => '2026-11-01']);
+
+        $this->artisan('pms:rent-reminders')->assertSuccessful();
+
+        $links = Notification::query()->where('forUserId', 'ten_ada')->whereIn('title', ['Rent due soon', 'Rent overdue'])->pluck('link')->all();
+        $this->assertEqualsCanonicalizing(["/portal/bills/{$late->id}", "/portal/bills/{$this->w->invoice->id}"], $links);
+        foreach ([$late->id, $this->w->invoice->id] as $id) {
+            Mail::assertQueued(RentReminderMail::class, function (RentReminderMail $m) use ($id) {
+                try {
+                    $m->assertSeeInHtml(config('app.frontend_url')."/portal/bills/{$id}");
+
+                    return true;
+                } catch (AssertionFailedError) {
+                    return false;
+                }
+            });
+        }
     }
 
     public function test_only_overdue_unpaid_invoices_are_chased(): void

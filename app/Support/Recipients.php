@@ -35,6 +35,33 @@ class Recipients
             ->values();
     }
 
+    /**
+     * The same answer as tenantUsers() for many tenants at once, in two queries however many there are (a bulk run emails
+     * one tenant per unit).
+     *
+     * @param  array<int,string>  $tenantIds
+     * @return Collection<string,Collection<int,User>> keyed by tenant id; a tenant with no login maps to an empty collection
+     */
+    public static function tenantUsersByTenant(array $tenantIds): Collection
+    {
+        $tenantIds = array_values(array_unique(array_filter($tenantIds)));
+        if (! $tenantIds) {
+            return collect();
+        }
+
+        $memberOf = PropertyMember::query()
+            ->where('role', 'tenant')->where('status', 'active')->whereIn('tenantId', $tenantIds)
+            ->get(['userId', 'tenantId'])->filter(fn ($m) => $m->userId)->groupBy('tenantId')->map(fn ($rows) => $rows->pluck('userId')->all());
+
+        $users = User::query()
+            ->where(fn ($q) => $q->whereIn('tenantId', $tenantIds)->orWhereIn('id', $memberOf->flatten()->unique()->all() ?: ['__none__']))
+            ->get();
+
+        return collect($tenantIds)->mapWithKeys(fn (string $tenantId) => [
+            $tenantId => $users->filter(fn (User $u) => $u->tenantId === $tenantId || in_array($u->id, $memberOf[$tenantId] ?? [], true))->unique('id')->values(),
+        ]);
+    }
+
     /** Owners + managers of a property (plus its denormalised managerId). */
     public static function propertyManagers(string $propertyId): Collection
     {

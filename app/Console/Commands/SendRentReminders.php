@@ -61,7 +61,7 @@ class SendRentReminders extends Command
                     ? "Invoice {$inv->code} for ₦".number_format($outstanding)." was due {$days} day(s) ago."
                     : "Invoice {$inv->code} for ₦".number_format($outstanding).' is due '.($days === 0 ? 'today' : "in {$days} day(s)").'.',
                 'forUserId' => $inv->tenantId,
-                'link' => '/portal/pay',
+                'link' => "/portal/bills/{$inv->id}",
             ]);
             $notified++;
 
@@ -73,7 +73,7 @@ class SendRentReminders extends Command
                     'outstanding' => '₦'.number_format($outstanding),
                     'overdue' => $overdue,
                     'days' => $days,
-                    'portalUrl' => FrontendUrl::to('/portal/pay'),
+                    'portalUrl' => FrontendUrl::to("/portal/bills/{$inv->id}"),
                 ]));
                 $emailed++;
             }

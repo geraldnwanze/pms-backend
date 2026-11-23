@@ -44,7 +44,19 @@ class WorkflowController extends Controller
 
     public function terminateLease(Request $request, string $id): JsonResponse
     {
-        return $this->ok(new EntityResource($this->leases->terminate($request->user(), $id)), 'Lease terminated.');
+        $data = $request->validate([
+            'closingReadings' => ['sometimes', 'array', 'max:30'],
+            'closingReadings.*.meterId' => ['required', 'string', 'distinct'],
+            'closingReadings.*.value' => ['required', 'numeric', 'min:0'],
+        ]);
+
+        [$lease, $invoice] = $this->leases->endTenancy($request->user(), $id, $data['closingReadings'] ?? []);
+
+        return $this->ok(
+            new EntityResource($lease),
+            'Lease terminated.',
+            ['finalBill' => $invoice ? ['id' => $invoice->id, 'code' => $invoice->code, 'total' => $invoice->total] : null],
+        );
     }
 
     public function cancelInvoice(Request $request, string $id): JsonResponse
@@ -108,6 +120,14 @@ class WorkflowController extends Controller
     public function billMeter(Request $request, string $id): JsonResponse
     {
         return $this->created(new EntityResource(app(UtilityBillingService::class)->billMeter($request->user(), $id)), 'Utility bill issued.');
+    }
+
+    /** What billing this meter would raise, or why it cannot be billed; `reading` asks it as if the meter had just been read at that value. */
+    public function previewMeterBill(Request $request, string $id): JsonResponse
+    {
+        $data = $request->validate(['reading' => ['sometimes', 'nullable', 'numeric', 'min:0']]);
+
+        return $this->ok(app(UtilityBillingService::class)->previewMeter($request->user(), $id, isset($data['reading']) ? (float) $data['reading'] : null));
     }
 
     /** Bill every meter that is ready, or (`dryRun`) report what that would raise. */

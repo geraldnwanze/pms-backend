@@ -4,12 +4,14 @@ namespace App\Services;
 
 use App\Models\Invoice;
 use App\Models\Lease;
+use App\Models\Meter;
 use App\Models\Payment;
 use App\Models\Unit;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 class LeaseService extends CrudService
 {
@@ -171,16 +173,38 @@ class LeaseService extends CrudService
 
     public function terminate(User $user, string $id): Lease
     {
+        return $this->endTenancy($user, $id)[0];
+    }
+
+    /**
+     * End a tenancy. The closing meter readings, if any, are saved first and in the same step as the termination, so the final
+     * utility bill is raised on them: either all of it happens or, if a reading is not acceptable, none of it does.
+     *
+     * @param  array<int,array{meterId:string,value:int|float|string}>  $closingReadings  the readings taken at move-out
+     * @return array{0:Lease,1:?Invoice} the ended lease, and the final utility bill if one was raised
+     */
+    public function endTenancy(User $user, string $id, array $closingReadings = []): array
+    {
         /** @var Lease $lease */
         $lease = $this->locate($user, $id);
         $this->authorize($user, 'update', $lease);
 
-        $lease->update(['status' => 'terminated', 'terminatedOn' => now()->toDateString()]);
-        // The unit only comes back on the market if nobody else is holding it (e.g. a lease due to start next).
-        if (! $this->holdsUnit($lease->unitId, $lease->id)) {
-            Unit::query()->where('id', $lease->unitId)->update(['status' => 'available']);
-        }
-        $this->audit->record($user, 'edit', 'Lease', $lease->id, "Terminated lease {$lease->code}");
+        $readings = $this->acceptableClosingReadings($lease, $closingReadings);
+
+        DB::transaction(function () use ($user, $lease, $readings) {
+            foreach ($readings as [$meter, $value]) {
+                app(MeterService::class)->addReading($user, $meter->id, $value, now()->toDateString());
+            }
+
+            $lease->update(['status' => 'terminated', 'terminatedOn' => now()->toDateString()]);
+            // The unit only comes back on the market if nobody else is holding it (e.g. a lease due to start next).
+            if (! $this->holdsUnit($lease->unitId, $lease->id)) {
+                Unit::query()->where('id', $lease->unitId)->update(['status' => 'available']);
+            }
+        });
+
+        $logged = count($readings);
+        $this->audit->record($user, 'edit', 'Lease', $lease->id, "Terminated lease {$lease->code}".($logged ? " (closing readings logged for {$logged} meter".($logged === 1 ? '' : 's').')' : ''));
         $this->notifications->push([
             'kind' => 'lease',
             'title' => 'Lease terminated',
@@ -196,10 +220,37 @@ class LeaseService extends CrudService
             'link' => "/properties/{$lease->propertyId}",
         ]);
 
-        // The tenant is leaving: bill them for the use still unbilled on the unit's meters, so it is on their account
-        // before the deposit is settled. (Never fails the termination; nothing is billed if someone else now holds the unit.)
-        app(UtilityBillingService::class)->billFinal($user, $lease->refresh());
+        // The tenant is leaving: bill them for the use still unbilled on the unit's meters (now including the closing readings),
+        // so it is on their account before the deposit is settled. Never fails the termination; nothing is billed if someone
+        // else now holds the unit.
+        $invoice = app(UtilityBillingService::class)->billFinal($user, $lease->refresh());
 
-        return $lease->refresh();
+        return [$lease->refresh(), $invoice];
+    }
+
+    /**
+     * Check the closing readings before anything is changed: each must be for a meter on this lease's unit and not below the
+     * meter's current reading. Readings that equal the current one change nothing and are dropped.
+     *
+     * @param  array<int,array{meterId:string,value:int|float|string}>  $closingReadings
+     * @return array<int,array{0:Meter,1:float}>
+     */
+    private function acceptableClosingReadings(Lease $lease, array $closingReadings): array
+    {
+        $accepted = [];
+
+        foreach ($closingReadings as $reading) {
+            $meter = Meter::query()->find($reading['meterId']);
+            abort_unless($meter && $meter->unitId === $lease->unitId, 422, 'That meter is not on this lease\'s unit.');
+
+            $value = (float) $reading['value'];
+            abort_if($meter->currentReading !== null && $value < $meter->currentReading, 422, "{$meter->meterNumber}: the closing reading ({$value}) is lower than the current reading ({$meter->currentReading}).");
+
+            if ($meter->currentReading === null || abs($value - $meter->currentReading) >= 0.0005) {
+                $accepted[] = [$meter, $value];
+            }
+        }
+
+        return $accepted;
     }
 }

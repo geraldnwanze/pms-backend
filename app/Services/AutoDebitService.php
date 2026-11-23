@@ -442,13 +442,13 @@ class AutoDebitService
         $amount = '₦'.number_format($attempt->amount);
 
         if (! $isLast) {
-            $this->tell($invoice->tenantId, 'Automatic payment failed', "We couldn't charge {$amount} for invoice {$invoice->code}: {$reason}. We'll try again on {$nextOn->toFormattedDateString()}.", '/portal/pay', [
+            $this->tell($invoice->tenantId, 'Automatic payment failed', "We couldn't charge {$amount} for invoice {$invoice->code}: {$reason}. We'll try again on {$nextOn->toFormattedDateString()}.", "/portal/bills/{$invoice->id}", [
                 'subject' => "Automatic payment for {$invoice->code} didn't go through",
                 'heading' => 'We couldn’t take your rent payment',
                 'intro' => "Your card was not charged for invoice {$invoice->code}. We'll try again automatically — or you can pay now.",
                 'lines' => ["Amount: {$amount}", "Reason: {$reason}", "Next attempt: {$nextOn->toFormattedDateString()}", "Attempt {$attempt->attemptNo} of ".self::MAX_ATTEMPTS],
                 'ctaLabel' => 'Pay now',
-                'ctaUrl' => FrontendUrl::to('/portal/pay'),
+                'ctaUrl' => FrontendUrl::to("/portal/bills/{$invoice->id}"),
                 'footnote' => 'Tip: make sure your card has enough balance and is still valid.',
             ], $invoice->id.'_a'.$attempt->attemptNo);
 
@@ -456,13 +456,13 @@ class AutoDebitService
         }
 
         // Final failure: back to manual for this invoice.
-        $this->tell($invoice->tenantId, 'Automatic payment failed — please pay manually', "We couldn't charge {$amount} for invoice {$invoice->code} after ".self::MAX_ATTEMPTS.' attempts. Please pay it yourself.', '/portal/pay', [
+        $this->tell($invoice->tenantId, 'Automatic payment failed — please pay manually', "We couldn't charge {$amount} for invoice {$invoice->code} after ".self::MAX_ATTEMPTS.' attempts. Please pay it yourself.', "/portal/bills/{$invoice->id}", [
             'subject' => "Action needed: pay invoice {$invoice->code} manually",
             'heading' => 'Please pay this invoice yourself',
             'intro' => 'We tried to charge your card '.self::MAX_ATTEMPTS." times for invoice {$invoice->code} and it didn't go through, so it's now back to manual payment.",
             'lines' => ["Amount: {$amount}", "Last reason: {$reason}"],
             'ctaLabel' => 'Pay now',
-            'ctaUrl' => FrontendUrl::to('/portal/pay'),
+            'ctaUrl' => FrontendUrl::to("/portal/bills/{$invoice->id}"),
             'footnote' => 'Auto-debit stays on for your future invoices. You can update or remove your card on the same page.',
         ], $invoice->id.'_final');
 
@@ -557,13 +557,13 @@ class AutoDebitService
         $amount = '₦'.number_format($outstanding);
         $on = Carbon::parse($invoice->dueDate)->toFormattedDateString();
 
-        return $this->tell($invoice->tenantId, 'Automatic payment tomorrow', "{$amount} will be charged to {$this->cardLabel($mandate)} on {$on} for invoice {$invoice->code}.", '/portal/pay', [
+        return $this->tell($invoice->tenantId, 'Automatic payment tomorrow', "{$amount} will be charged to {$this->cardLabel($mandate)} on {$on} for invoice {$invoice->code}.", "/portal/bills/{$invoice->id}", [
             'subject' => "We'll charge {$amount} tomorrow for {$invoice->code}",
             'heading' => 'Your rent is due tomorrow',
             'intro' => 'Your saved card will be charged automatically. Nothing for you to do — just make sure the funds are there.',
             'lines' => ["Invoice: {$invoice->code}", "Amount: {$amount}", "Charge date: {$on}", "Card: {$this->cardLabel($mandate)}"],
             'ctaLabel' => 'Review payments',
-            'ctaUrl' => FrontendUrl::to('/portal/pay'),
+            'ctaUrl' => FrontendUrl::to("/portal/bills/{$invoice->id}"),
         ], $invoice->id.'_remind');
     }
 

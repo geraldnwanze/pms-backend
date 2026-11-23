@@ -5,11 +5,13 @@ namespace Tests\Feature\AutoDebit;
 use App\Mail\AutoDebitMail;
 use App\Models\AutoDebitAttempt;
 use App\Models\AutoDebitMandate;
+use App\Models\Notification;
 use App\Models\Payment;
 use App\Services\AutoDebitService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
+use PHPUnit\Framework\AssertionFailedError;
 use ReflectionMethod;
 use Tests\Support\FakePaystack;
 
@@ -208,6 +210,7 @@ class ChargingScheduleTest extends AutoDebitTestCase
         $this->assertSame(1, $this->tenantNotifications()->filter(fn ($t) => $t === 'Automatic payment failed')->count());
         Mail::assertQueued(AutoDebitMail::class, 1);
         $this->assertSame('Insufficient Funds', $this->attempts()->first()->reason);
+        $this->assertTenantNoticeLinksToInvoice('Automatic payment failed');
     }
 
     public function test_a_retry_that_succeeds_settles_the_invoice_and_ends_the_attempts(): void
@@ -234,6 +237,7 @@ class ChargingScheduleTest extends AutoDebitTestCase
         }
 
         $this->assertContains('Automatic payment failed — please pay manually', $this->tenantNotifications());
+        $this->assertTenantNoticeLinksToInvoice('Automatic payment failed — please pay manually');
         foreach (['ownerA', 'managerA'] as $who) {
             $this->assertDatabaseHas('notifications', ['forUserId' => $this->w->{$who}->id, 'title' => 'Auto-debit failed']);
         }
@@ -367,6 +371,29 @@ class ChargingScheduleTest extends AutoDebitTestCase
         $this->assertSame(1, $this->tenantNotifications()->filter(fn ($t) => $t === 'Automatic payment tomorrow')->count());
         Mail::assertQueued(AutoDebitMail::class, fn (AutoDebitMail $m) => $m->hasTo('ada@tenant.test'));
         $this->assertCount(0, $this->chargeCalls());
+    }
+
+    public function test_the_reminder_and_failure_notices_open_the_invoice_they_are_about(): void
+    {
+        $this->dueOn('2026-11-12');
+        $this->runOn('2026-11-11');
+
+        $this->assertTenantNoticeLinksToInvoice('Automatic payment tomorrow');
+    }
+
+    private function assertTenantNoticeLinksToInvoice(string $title): void
+    {
+        $id = $this->w->invoice->id;
+        $this->assertSame("/portal/bills/{$id}", Notification::query()->where('forUserId', 'ten_ada')->where('title', $title)->value('link'));
+        Mail::assertQueued(AutoDebitMail::class, function (AutoDebitMail $m) use ($id) {
+            try {
+                $m->assertSeeInHtml(config('app.frontend_url')."/portal/bills/{$id}");
+
+                return true;
+            } catch (AssertionFailedError) {
+                return false;
+            }
+        });
     }
 
     public function test_no_reminder_for_invoices_due_before_enrolment_or_two_days_out(): void
