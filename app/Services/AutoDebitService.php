@@ -725,7 +725,7 @@ class AutoDebitService
     // Staff view (owners / managers / finance / admin)
     // =====================================================================
 
-    private const STAFF_ROLES = ['admin', 'owner', 'manager', 'finance'];
+    private const STAFF_ROLES = ['superadmin', 'admin', 'owner', 'manager', 'finance'];
 
     /**
      * Auto-debit state for every invoice the caller can see that either belongs to an enrolled tenant

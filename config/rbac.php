@@ -20,7 +20,7 @@ $everyone = [...$allStaff, 'tenant'];
 // property (which makes them its owner) and act on account-level resources only.
 $withUser = [...$everyone, 'user'];
 
-return [
+$rbac = [
 
     'roles' => $withUser,
 
@@ -64,3 +64,18 @@ return [
         'users' => ['view' => ['admin'], 'manage' => ['admin']],
     ],
 ];
+
+// A superadmin is an admin who can also switch modules on and off, so it is derived from `admin` rather than repeated:
+// whatever an admin may do, a superadmin may do, and the two can never drift apart.
+$rbac['roles'] = ['superadmin', ...$rbac['roles']];
+$rbac['permissions']['superadmin'] = [...$rbac['permissions']['admin'], 'manage_modules'];
+$rbac['payment_approvers'][] = 'superadmin';
+foreach ($rbac['resources'] as $resource => $rules) {
+    foreach ($rules as $kind => $roles) {
+        if (in_array('admin', $roles, true)) {
+            $rbac['resources'][$resource][$kind][] = 'superadmin';
+        }
+    }
+}
+
+return $rbac;

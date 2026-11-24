@@ -42,14 +42,14 @@ class NoticeService extends CrudService
         if ($ids !== null) {
             // A notice with no property was posted to "everyone I work with": it reaches the poster's colleagues
             // (people on the same properties) and, if an administrator posted it, everyone. Never other owners'.
-            $reach = array_merge($this->scope->colleagueIds($user) ?? [], User::query()->where('role', 'admin')->pluck('id')->all());
+            $reach = array_merge($this->scope->colleagueIds($user) ?? [], User::query()->whereIn('role', User::ADMIN_ROLES)->pluck('id')->all());
             $query->where(fn ($q) => $q->whereIn('propertyId', $ids ?: ['__none__'])
                 ->orWhere(fn ($w) => $w->whereNull('propertyId')->whereIn('createdById', $reach)));
         }
 
         // Audience gate — a tenant only sees tenant/all notices, staff never sees owner-only.
         $audiences = match ($user->role) {
-            'admin' => ['all', 'owners', 'tenants', 'staff'],
+            'superadmin', 'admin' => ['all', 'owners', 'tenants', 'staff'],
             'owner' => ['all', 'owners'],
             'tenant' => ['all', 'tenants'],
             default => ['all', 'staff'],

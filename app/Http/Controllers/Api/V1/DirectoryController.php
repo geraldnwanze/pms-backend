@@ -25,7 +25,7 @@ class DirectoryController extends Controller
     public function owners(Request $request): JsonResponse
     {
         $user = $request->user();
-        abort_unless(in_array($user->role, ['admin', 'owner'], true), 403, 'Owners directory is admin/owner only.');
+        abort_unless($user->isAdmin() || $user->role === 'owner', 403, 'Owners directory is admin/owner only.');
 
         $ownerIds = PropertyMember::query()->where('role', 'owner')->where('status', 'active')
             ->when(! $user->isAdmin(), fn ($q) => $q->where('userId', $user->id))
@@ -64,7 +64,7 @@ class DirectoryController extends Controller
     public function staff(Request $request): JsonResponse
     {
         $user = $request->user();
-        abort_unless(in_array($user->role, ['admin', 'owner', 'manager'], true), 403, 'Staff directory is admin/owner/manager only.');
+        abort_unless($user->isAdmin() || in_array($user->role, ['owner', 'manager'], true), 403, 'Staff directory is admin/owner/manager only.');
 
         $propertyIds = $this->scope->visibleIds($user);
 

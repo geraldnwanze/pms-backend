@@ -105,6 +105,7 @@ class DatabaseSeeder extends Seeder
                 $this->seedMemberships();
                 $this->seedDemoTenants();
                 $this->seedDemoMember();
+                $this->seedSuperAdmin();
             });
         });
     }
@@ -216,6 +217,24 @@ class DatabaseSeeder extends Seeder
      * can register a property (becoming its owner) or accept an invitation sent
      * to member@test.com — i.e. exactly what a new sign-up experiences.
      */
+    /** The one account that can switch modules on and off. Dev only: it signs in with the demo password like the rest. */
+    private function seedSuperAdmin(): void
+    {
+        User::query()->updateOrCreate(['id' => 'superadmin_1'], [
+            'name' => 'Chidi Eze',
+            'email' => 'superadmin@test.com',
+            'role' => 'superadmin',
+            'password' => Hash::make('password'),
+            'avatarColor' => '#0f766e',
+            'status' => 'active',
+            'twoFactorEnabled' => false,
+            'emailVerifiedAt' => now()->toIso8601String(),
+            'title' => 'Platform superadmin',
+        ]);
+
+        $this->command?->info('  superadmin       1 account');
+    }
+
     private function seedDemoMember(): void
     {
         User::query()->updateOrCreate(['id' => 'demo_member'], [

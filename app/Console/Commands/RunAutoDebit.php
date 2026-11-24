@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Console\Concerns\SkipsWhenModuleOff;
 use App\Services\AutoDebitService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
@@ -12,6 +13,8 @@ use Illuminate\Support\Carbon;
  */
 class RunAutoDebit extends Command
 {
+    use SkipsWhenModuleOff;
+
     protected $signature = 'pms:auto-debit
         {--dry-run : List what would be charged without charging anything}
         {--invoice= : Only this invoice (id or code)}
@@ -23,6 +26,10 @@ class RunAutoDebit extends Command
 
     public function handle(AutoDebitService $autoDebit): int
     {
+        if ($this->moduleIsOff('auto-debit')) {
+            return self::SUCCESS;
+        }
+
         $testing = $this->option('date') || $this->option('force') || $this->option('amount');
 
         if ($testing && app()->environment('production')) {

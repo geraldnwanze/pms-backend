@@ -284,14 +284,14 @@ class DatabaseSeederTest extends TestCase
         $this->seedOn('2026-11-11');
 
         $ids = User::query()->pluck('id')->sort()->values()->all();
-        foreach (['admin_1', 'owner_1', 'owner_2', 'tech_1', 'tech_2', 'mgr_1', 'finance_1', 'demo_member'] as $id) {
+        foreach (['admin_1', 'superadmin_1', 'owner_1', 'owner_2', 'tech_1', 'tech_2', 'mgr_1', 'finance_1', 'demo_member'] as $id) {
             $this->assertContains($id, $ids);
         }
         // the other managers, the agents and the ~40 tenant accounts from the dataset are NOT seeded
         foreach (['mgr_2', 'mgr_3', 'agt_1', 'tech_3', 'tuser_ten_0000g'] as $id) {
             $this->assertNotContains($id, $ids);
         }
-        $this->assertLessThanOrEqual(10, count($ids));
+        $this->assertLessThanOrEqual(11, count($ids));
 
         foreach (User::query()->get() as $user) {
             $this->assertTrue(Hash::check('password', $user->password), "{$user->id} should use the demo password");

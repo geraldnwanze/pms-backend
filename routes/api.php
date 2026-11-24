@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\V1\EntityController;
 use App\Http\Controllers\Api\V1\MaintenanceController;
 use App\Http\Controllers\Api\V1\MaintenancePayoutController;
 use App\Http\Controllers\Api\V1\MembershipController;
+use App\Http\Controllers\Api\V1\ModuleController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PortalController;
 use App\Http\Controllers\Api\V1\PushController;
@@ -27,6 +28,7 @@ use App\Http\Controllers\Api\V1\WebhookController;
 use App\Http\Controllers\Api\V1\WorkflowController;
 use App\Support\Collections;
 use App\Support\EntityRegistry;
+use App\Support\Modules;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', fn () => ['ok' => true, 'time' => now()->toIso8601String()]);
@@ -66,19 +68,21 @@ Route::prefix('v1')->group(function () {
         Route::get('/push/vapid-key', [PushController::class, 'key']);
         Route::post('/push/subscriptions', [PushController::class, 'store']);
         Route::delete('/push/subscriptions', [PushController::class, 'destroy']);
-        Route::get('/analytics', AnalyticsController::class);
+        Route::get('/analytics', AnalyticsController::class)->middleware('module:reports');
         Route::get('/rbac', RbacController::class);
+        Route::get('/modules', [ModuleController::class, 'index']);
+        Route::put('/modules/{key}', [ModuleController::class, 'update']);
 
-        Route::get('/reports/collections', [ReportController::class, 'collections']);
-        Route::get('/reports/occupancy', [ReportController::class, 'occupancy']);
-        Route::get('/reports/expenses', [ReportController::class, 'expenses']);
-        Route::get('/reports/owner-statement', [ReportController::class, 'ownerStatement']);
+        Route::get('/reports/collections', [ReportController::class, 'collections'])->middleware('module:reports');
+        Route::get('/reports/occupancy', [ReportController::class, 'occupancy'])->middleware('module:reports');
+        Route::get('/reports/expenses', [ReportController::class, 'expenses'])->middleware('module:reports');
+        Route::get('/reports/owner-statement', [ReportController::class, 'ownerStatement'])->middleware('module:reports');
 
         Route::get('/owners', [DirectoryController::class, 'owners']);
         Route::get('/staff', [DirectoryController::class, 'staff']);
 
-        Route::post('/reminders/overdue', [ReminderController::class, 'overdue']);
-        Route::post('/reminders/expiring-leases', [ReminderController::class, 'expiringLeases']);
+        Route::post('/reminders/overdue', [ReminderController::class, 'overdue'])->middleware('module:reminders');
+        Route::post('/reminders/expiring-leases', [ReminderController::class, 'expiringLeases'])->middleware('module:reminders');
 
         Route::get('/settings/organization', [SettingsController::class, 'organization']);
         Route::put('/settings/organization', [SettingsController::class, 'updateOrganization']);
@@ -91,27 +95,27 @@ Route::prefix('v1')->group(function () {
         Route::post('/payments/paystack/verify', [PaymentController::class, 'paystackVerify']);
 
         // Tenant auto-debit: rent charged to a saved card on the due date.
-        Route::get('/auto-debit', [AutoDebitController::class, 'status']);
-        Route::post('/auto-debit/setup', [AutoDebitController::class, 'setup'])->middleware('throttle:10,1');
-        Route::delete('/auto-debit', [AutoDebitController::class, 'cancel']);
-        Route::get('/auto-debit/overview', [AutoDebitController::class, 'overview']);
-        Route::get('/auto-debit/invoices/{id}', [AutoDebitController::class, 'invoice']);
+        Route::get('/auto-debit', [AutoDebitController::class, 'status'])->middleware('module:auto-debit');
+        Route::post('/auto-debit/setup', [AutoDebitController::class, 'setup'])->middleware(['throttle:10,1', 'module:auto-debit']);
+        Route::delete('/auto-debit', [AutoDebitController::class, 'cancel'])->middleware('module:auto-debit');
+        Route::get('/auto-debit/overview', [AutoDebitController::class, 'overview'])->middleware('module:auto-debit');
+        Route::get('/auto-debit/invoices/{id}', [AutoDebitController::class, 'invoice'])->middleware('module:auto-debit');
         Route::get('/payments/{id}/receipt-link', [PaymentController::class, 'receiptLink']);
         Route::post('/payments/{id}/approve', [PaymentController::class, 'approve']);
         Route::post('/payments/{id}/reject', [PaymentController::class, 'reject']);
         Route::post('/payments/{id}/request-info', [PaymentController::class, 'requestInfo']);
         Route::post('/payments/{id}/refund', [PaymentController::class, 'refund']);
 
-        Route::post('/maintenance/{id}/transition', [MaintenanceController::class, 'transition']);
-        Route::post('/maintenance/{id}/rounds', [MaintenanceController::class, 'addRound']);
-        Route::post('/maintenance/{id}/confirm', [MaintenanceController::class, 'confirm']);
+        Route::post('/maintenance/{id}/transition', [MaintenanceController::class, 'transition'])->middleware('module:maintenance');
+        Route::post('/maintenance/{id}/rounds', [MaintenanceController::class, 'addRound'])->middleware('module:maintenance');
+        Route::post('/maintenance/{id}/confirm', [MaintenanceController::class, 'confirm'])->middleware('module:maintenance');
 
         // Technician payouts for completed, tenant-confirmed work orders.
-        Route::get('/maintenance-payouts', [MaintenancePayoutController::class, 'index']);
-        Route::post('/maintenance/{id}/payout', [MaintenancePayoutController::class, 'request']);
-        Route::post('/maintenance-payouts/{id}/approve', [MaintenancePayoutController::class, 'approve']);
-        Route::post('/maintenance-payouts/{id}/reject', [MaintenancePayoutController::class, 'reject']);
-        Route::post('/maintenance-payouts/{id}/pay', [MaintenancePayoutController::class, 'pay']);
+        Route::get('/maintenance-payouts', [MaintenancePayoutController::class, 'index'])->middleware('module:payouts');
+        Route::post('/maintenance/{id}/payout', [MaintenancePayoutController::class, 'request'])->middleware('module:payouts');
+        Route::post('/maintenance-payouts/{id}/approve', [MaintenancePayoutController::class, 'approve'])->middleware('module:payouts');
+        Route::post('/maintenance-payouts/{id}/reject', [MaintenancePayoutController::class, 'reject'])->middleware('module:payouts');
+        Route::post('/maintenance-payouts/{id}/pay', [MaintenancePayoutController::class, 'pay'])->middleware('module:payouts');
 
         Route::post('/leases/{id}/renew', [WorkflowController::class, 'renewLease']);
         Route::post('/leases/{id}/terminate', [WorkflowController::class, 'terminateLease']);
@@ -120,14 +124,14 @@ Route::prefix('v1')->group(function () {
         Route::post('/leases/{id}/deposit/settle', [WorkflowController::class, 'settleDeposit']);
         Route::post('/invoices/{id}/cancel', [WorkflowController::class, 'cancelInvoice']);
         Route::post('/invoices/{id}/waive-late-fee', [WorkflowController::class, 'waiveLateFee']);
-        Route::post('/expenses/{id}/status', [WorkflowController::class, 'setExpenseStatus']);
-        Route::post('/meters/{id}/readings', [WorkflowController::class, 'addMeterReading']);
-        Route::post('/meters/bill-all', [WorkflowController::class, 'billAllMeters']);
-        Route::get('/meters/bill-runs', [WorkflowController::class, 'billRuns']);
-        Route::post('/meters/{id}/bill-preview', [WorkflowController::class, 'previewMeterBill']);
-        Route::post('/meters/{id}/bill', [WorkflowController::class, 'billMeter']);
-        Route::post('/tasks/{id}/toggle', [WorkflowController::class, 'toggleTask']);
-        Route::post('/messages/mark-thread-read', [WorkflowController::class, 'markThreadRead']);
+        Route::post('/expenses/{id}/status', [WorkflowController::class, 'setExpenseStatus'])->middleware('module:expenses');
+        Route::post('/meters/{id}/readings', [WorkflowController::class, 'addMeterReading'])->middleware('module:utilities');
+        Route::post('/meters/bill-all', [WorkflowController::class, 'billAllMeters'])->middleware('module:utilities');
+        Route::get('/meters/bill-runs', [WorkflowController::class, 'billRuns'])->middleware('module:utilities');
+        Route::post('/meters/{id}/bill-preview', [WorkflowController::class, 'previewMeterBill'])->middleware('module:utilities');
+        Route::post('/meters/{id}/bill', [WorkflowController::class, 'billMeter'])->middleware('module:utilities');
+        Route::post('/tasks/{id}/toggle', [WorkflowController::class, 'toggleTask'])->middleware('module:planner');
+        Route::post('/messages/mark-thread-read', [WorkflowController::class, 'markThreadRead'])->middleware('module:communications');
         Route::post('/notifications/{id}/read', [WorkflowController::class, 'markNotificationRead']);
         Route::post('/notifications/read-all', [WorkflowController::class, 'markAllNotificationsRead']);
 
@@ -142,7 +146,9 @@ Route::prefix('v1')->group(function () {
 
         // --- Generic REST for every registered resource ---
         foreach (EntityRegistry::keys() as $resource) {
-            Route::prefix($resource)->group(function () use ($resource) {
+            // A resource that belongs to a module answers "turned off" while that module is off.
+            $module = Modules::forResource($resource);
+            Route::prefix($resource)->middleware($module ? "module:{$module}" : [])->group(function () use ($resource) {
                 Route::get('/', [EntityController::class, 'index'])->defaults('resource', $resource);
                 Route::post('/', [EntityController::class, 'store'])->defaults('resource', $resource);
                 Route::get('/{id}', [EntityController::class, 'show'])->defaults('resource', $resource);

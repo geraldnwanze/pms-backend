@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Console\Concerns\SkipsWhenModuleOff;
 use App\Services\LateFeeService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
@@ -12,6 +13,8 @@ use Illuminate\Support\Carbon;
  */
 class ApplyLateFees extends Command
 {
+    use SkipsWhenModuleOff;
+
     protected $signature = 'pms:apply-late-fees
         {--dry-run : List the fees that would be charged without charging any}
         {--date= : Pretend today is this date (YYYY-MM-DD) — not in production}';
@@ -20,6 +23,10 @@ class ApplyLateFees extends Command
 
     public function handle(LateFeeService $fees): int
     {
+        if ($this->moduleIsOff('reminders')) {
+            return self::SUCCESS;
+        }
+
         if ($this->option('date') && app()->environment('production')) {
             $this->error('--date is a testing switch and is disabled in production.');
 

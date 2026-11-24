@@ -31,7 +31,10 @@ class User extends Authenticatable
      * admin flag) becomes their denormalised `role` for capability checks and
      * UI labelling. `user` is the base: registered, but not yet on any property.
      */
-    public const ROLE_PRECEDENCE = ['admin', 'owner', 'finance', 'manager', 'agent', 'maintenance', 'tenant', 'user'];
+    public const ROLE_PRECEDENCE = ['superadmin', 'admin', 'owner', 'finance', 'manager', 'agent', 'maintenance', 'tenant', 'user'];
+
+    /** Roles that see and manage the whole platform. A superadmin is an admin who can also switch modules on and off. */
+    public const ADMIN_ROLES = ['superadmin', 'admin'];
 
     /** @var array<int,string> */
     protected $appends = ['emailVerified'];
@@ -116,15 +119,15 @@ class User extends Authenticatable
      */
     public function recomputeRole(): string
     {
-        if ($this->role === 'admin') {
-            return 'admin';
+        if ($this->isAdmin()) {
+            return $this->role;
         }
 
         $held = $this->membershipRoles();
 
         $resolved = 'user';
         foreach (self::ROLE_PRECEDENCE as $role) {
-            if ($role === 'admin') {
+            if (in_array($role, self::ADMIN_ROLES, true)) {
                 continue;
             }
             if (in_array($role, $held, true)) {
@@ -149,12 +152,17 @@ class User extends Authenticatable
 
     public function isAdmin(): bool
     {
-        return $this->role === 'admin';
+        return in_array($this->role, self::ADMIN_ROLES, true);
+    }
+
+    public function isSuperAdmin(): bool
+    {
+        return $this->role === 'superadmin';
     }
 
     public function canApprovePayments(): bool
     {
-        return in_array($this->role, ['finance', 'admin'], true)
+        return $this->isAdmin() || $this->role === 'finance'
             || in_array('finance', $this->membershipRoles(), true);
     }
 }

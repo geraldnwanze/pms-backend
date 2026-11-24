@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Models\User;
 use App\Policies\EntityPolicy;
 use App\Support\EntityRegistry;
+use App\Support\Modules;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -15,7 +16,8 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        //
+        // One read of the module switches per request (or per console command), however many places ask.
+        $this->app->scoped(Modules::class);
     }
 
     public function boot(): void

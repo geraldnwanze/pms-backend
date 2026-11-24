@@ -8,6 +8,7 @@ use App\Models\Lead;
 use App\Models\MaintenanceRequest;
 use App\Services\MetricsService;
 use App\Services\PropertyScope;
+use App\Support\Modules;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -18,12 +19,12 @@ class AnalyticsController extends Controller
 {
     use ApiResponses;
 
-    public function __invoke(Request $request, MetricsService $metrics, PropertyScope $scope): JsonResponse
+    public function __invoke(Request $request, MetricsService $metrics, PropertyScope $scope, Modules $modules): JsonResponse
     {
         $propertyIds = $scope->visibleIds($request->user());
         $months = (int) $request->query('months', 12);
 
-        $maintByMonth = MaintenanceRequest::query()
+        $maintByMonth = ! $modules->enabled('maintenance') ? collect() : MaintenanceRequest::query()
             ->when($propertyIds !== null, fn ($q) => $q->whereIn('propertyId', $propertyIds ?: ['__none__']))
             ->get(['createdAt', 'status'])
             ->groupBy(fn ($m) => substr((string) $m->createdAt, 0, 7))
@@ -32,7 +33,7 @@ class AnalyticsController extends Controller
                 'closed' => $g->whereIn('status', ['verified', 'closed'])->count(),
             ]);
 
-        $leadFunnel = Lead::query()
+        $leadFunnel = ! $modules->enabled('leasing') ? collect() : Lead::query()
             ->when($propertyIds !== null, fn ($q) => $q->whereIn('propertyId', $propertyIds ?: ['__none__']))
             ->selectRaw('status, count(*) as n')->groupBy('status')->pluck('n', 'status');
 
@@ -41,7 +42,7 @@ class AnalyticsController extends Controller
             'maintenanceByMonth' => $maintByMonth->map(fn ($v, $k) => ['month' => $k] + $v)->values(),
             'leadFunnel' => collect(['new', 'contacted', 'viewing-scheduled', 'negotiating', 'converted', 'lost'])
                 ->mapWithKeys(fn ($s) => [$s => (int) ($leadFunnel[$s] ?? 0)]),
-            'expensesByCategory' => $metrics->expensesByCategory($propertyIds, null, null),
+            'expensesByCategory' => $modules->enabled('expenses') ? $metrics->expensesByCategory($propertyIds, null, null) : [],
         ], 'Analytics.');
     }
 }

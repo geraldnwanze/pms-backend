@@ -158,12 +158,76 @@ POST /api/v1/notifications/read-all
 
 - **Capability** — `App\Policies\EntityPolicy` checks the acting role has the
   permission for the verb (`view`/`create`/`edit`/`delete`/`approve`…). Admins
-  bypass. Payment approval is restricted to `finance` + `admin`.
+  and superadmins bypass. Payment approval is restricted to `finance` + `admin`.
 - **Visibility** — `App\Services\PropertyScope` computes the property/tenant ids
   a user may see (owner → owned, manager/agent → assigned, finance → their
   owner's portfolio, maintenance → assigned jobs, tenant → their unit). Every
   service's `scopeQuery()` applies it, so list *and* show/update/delete are
   filtered identically; an out-of-scope id returns `403`.
+
+### Modules and the superadmin
+
+Properties, units, tenants, leases, invoices, payments, users, notifications, settings and the dashboard are the **core** and
+always on. Everything else is a **module** that a **superadmin** can switch off for the whole platform. A module that is off:
+
+- answers `403 {"message": "The … module is turned off.", "module": "<key>"}` on its routes — to everyone, superadmins included;
+- sends nothing in `GET /bootstrap`, and is trimmed from the dashboards, the resident portal and analytics (the API empties the module's
+  lists and queues; the app also leaves out the tiles and cards that show its figures, such as open maintenance or expenses);
+- stops its scheduled work (the commands print `Skipped: the … module is turned off.`), and its follow-on effects in other
+  flows (no closing readings or final bill at move-out while Utilities is off; no card saved for auto-debit while Auto-debit is off).
+
+Nothing is deleted: switching a module back on restores everything. Every module is on until a superadmin says otherwise (only the
+switched-off ones are stored, in the `modules` row of the `settings` table), so a module added later is on by default.
+
+| Key | Module | Needs |
+|---|---|---|
+| `utilities` | Utilities & meters: readings, bill preview, bulk and monthly billing, the final bill at move-out | |
+| `auto-debit` | Auto-debit: saved card, charged on the due date | |
+| `reminders` | Late fees & reminders: late fees, rent reminders, lease-expiry reminders | |
+| `maintenance` | Maintenance requests and the work-order flow | |
+| `payouts` | Technician payouts | `maintenance` |
+| `inspections` | Inspections | |
+| `expenses` | Expenses & vendors | |
+| `leasing` | Listings & leads | |
+| `documents` | Documents | |
+| `communications` | Notices & messages | |
+| `planner` | Tasks & calendar | |
+| `reports` | Reports & analytics | |
+
+A module that needs another is off whenever that one is. Switching one off that others need is refused with a `422` listing them,
+unless the request sets `cascade`, which switches them off too; a module cannot be switched on while one it needs is off.
+
+```
+GET /api/v1/modules                      # anyone signed in: key, label, description, requires, dependents, enabled
+PUT /api/v1/modules/{key}                # superadmin only: {"enabled": false, "cascade": false}
+```
+
+`/bootstrap` also carries `data.modules` (`{key: bool}`) so the app can hide what is off. Each change is written to the audit trail.
+Two superadmins switching at once cannot undo each other: the switch re-reads the stored list under a row lock inside a transaction.
+
+**The superadmin role.** A superadmin is an admin who can also switch modules (`config/rbac.php` derives it from `admin`, so the two
+cannot drift apart). There is no screen or API for making one — on purpose — only the command, run on the server:
+
+```bash
+php artisan pms:make-superadmin you@example.com                 # new account: asks for the name and the password (twice, hidden)
+php artisan pms:make-superadmin you@example.com --name="Your Name" --password=...   # or give them (the password lands in shell history)
+php artisan pms:make-superadmin existing@example.com            # promote an existing account (asks first; --force skips the question)
+php artisan pms:make-superadmin them@example.com --revoke       # take it away again: back to admin (--to=user for a plain account)
+```
+
+A superadmin account is protected in the app too: only a superadmin may edit one at all (otherwise an admin could set its password and
+sign in as it), and nobody can change its role or status, or delete it, through the app — use `--revoke` first. The audit trail shows
+these command-line changes with the source "Command line".
+
+An account that belongs to a property or a tenancy cannot be promoted (use a separate account), nor can a deactivated one.
+`--revoke` refuses to remove the **only** superadmin: make the new one first, then revoke the old one. Every change is recorded in the
+audit trail as `system`. The dev seeder adds one (`superadmin_1`, superadmin@test.com) with the usual demo password.
+
+**Adding a module.** Add its entry to `App\Support\Modules::DEFINITIONS` (label, description, `requires`, and the REST `resources` it
+owns), then gate what the REST loop does not cover: put `->middleware('module:<key>')` on its action routes in `routes/api.php`, have
+its scheduled commands use `SkipsWhenModuleOff`, and trim it from any dashboard or portal payload. The tests in
+`tests/Feature/Modules` fail if a registry entry names a resource that does not exist or is claimed twice, or if a gated route is
+missing from the list in `ModuleGatingTest`. The frontend half is in its README.
 
 ### Architecture
 

@@ -7,6 +7,7 @@ use App\Models\Payment;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Support\FrontendUrl;
+use App\Support\Modules;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -178,7 +179,8 @@ class PaystackService
         }
 
         // The tenant ticked "save this card for auto-debit": keep Paystack's reusable token (never the card).
-        if ($payment->saveCard) {
+        // (Not while Auto-debit is turned off: no card is kept for a feature that is not running.)
+        if ($payment->saveCard && app(Modules::class)->enabled('auto-debit')) {
             try {
                 app(AutoDebitService::class)->captureFromTransaction((string) $payment->tenantId, $data);
             } catch (\Throwable $e) {

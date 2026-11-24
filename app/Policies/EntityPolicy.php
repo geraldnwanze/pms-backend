@@ -111,7 +111,7 @@ class EntityPolicy
     private function visible(User $user, Model $model): bool
     {
         if ($model instanceof AuditLog) {
-            return in_array($user->role, ['admin', 'finance'], true);
+            return $user->isAdmin() || $user->role === 'finance';
         }
 
         $attributes = $model->getAttributes();

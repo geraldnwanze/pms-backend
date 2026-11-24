@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Console\Concerns\SkipsWhenModuleOff;
 use App\Services\ReminderService;
 use Illuminate\Console\Command;
 
@@ -12,12 +13,18 @@ use Illuminate\Console\Command;
  */
 class SendLeaseExpiryReminders extends Command
 {
+    use SkipsWhenModuleOff;
+
     protected $signature = 'pms:lease-expiry-reminders {--days=60 : How many days ahead to warn}';
 
     protected $description = 'Send lease-expiring reminders to tenants (in-app + queued email)';
 
     public function handle(ReminderService $reminders): int
     {
+        if ($this->moduleIsOff('reminders')) {
+            return self::SUCCESS;
+        }
+
         $result = $reminders->sendExpiringLeases(null, null, (int) $this->option('days'));
 
         $this->info("Lease-expiry reminders: {$result['notified']} in-app, {$result['emailed']} email(s) queued.");

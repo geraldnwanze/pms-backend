@@ -4,6 +4,7 @@ use App\Exceptions\ApiExceptionRenderer;
 use App\Http\Middleware\DemoEnvironmentOnly;
 use App\Http\Middleware\EnsureAccountIsActive;
 use App\Http\Middleware\EnsureDemoUser;
+use App\Http\Middleware\EnsureModuleEnabled;
 use App\Http\Middleware\ForceJsonResponse;
 use App\Http\Middleware\ResolveDemoUser;
 use Illuminate\Auth\AuthenticationException;
@@ -36,6 +37,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // Sanctum token, override `$request->user()` on /api/v1 with a bare user id.
         $middleware->alias([
             'account.active' => EnsureAccountIsActive::class,
+            'module' => EnsureModuleEnabled::class,
             'demo.only' => DemoEnvironmentOnly::class,
             'demo.resolve' => ResolveDemoUser::class,
             'demo.auth' => EnsureDemoUser::class,

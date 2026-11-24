@@ -89,7 +89,7 @@ class Recipients
      */
     public static function paymentApprovers(?string $propertyId = null): Collection
     {
-        $admins = User::query()->where('role', 'admin')->get();
+        $admins = User::query()->whereIn('role', User::ADMIN_ROLES)->get();
 
         $financeQuery = User::query()->where('role', 'finance');
         if ($propertyId) {

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Console\Concerns\SkipsWhenModuleOff;
 use App\Mail\RentReminderMail;
 use App\Models\Invoice;
 use App\Services\NotificationService;
@@ -18,12 +19,18 @@ use Illuminate\Support\Facades\Mail;
  */
 class SendRentReminders extends Command
 {
+    use SkipsWhenModuleOff;
+
     protected $signature = 'pms:rent-reminders {--days=7 : Look-ahead window for "due soon"}';
 
     protected $description = 'Send rent due-soon / overdue reminders to tenants (in-app + queued email)';
 
     public function handle(NotificationService $notifications): int
     {
+        if ($this->moduleIsOff('reminders')) {
+            return self::SUCCESS;
+        }
+
         $window = (int) $this->option('days');
         $today = Carbon::now()->startOfDay();
         $stamp = $today->format('Ymd');

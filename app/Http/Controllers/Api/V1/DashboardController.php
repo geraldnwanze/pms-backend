@@ -8,6 +8,7 @@ use App\Models\AuditLog;
 use App\Models\User;
 use App\Services\MetricsService;
 use App\Services\PropertyScope;
+use App\Support\Modules;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -26,6 +27,7 @@ class DashboardController extends Controller
 
     /** role → dashboard persona (drives both the layout and the payload shape). */
     private const PERSONA = [
+        'superadmin' => 'portfolio',
         'admin' => 'portfolio',
         'owner' => 'portfolio',
         'finance' => 'finance',
@@ -34,7 +36,7 @@ class DashboardController extends Controller
         'maintenance' => 'maintenance',
     ];
 
-    public function __invoke(Request $request, MetricsService $metrics, PropertyScope $scope): JsonResponse
+    public function __invoke(Request $request, MetricsService $metrics, PropertyScope $scope, Modules $modules): JsonResponse
     {
         $user = $request->user();
 
@@ -74,25 +76,50 @@ class DashboardController extends Controller
             'finance' => [
                 'overdueInvoices' => $metrics->overdueInvoices($propertyIds, 12),
                 'pendingPayments' => $metrics->pendingVerificationPayments($propertyIds),
-                'expensesPending' => $metrics->pendingExpenses($propertyIds),
-                'expensesByCategory' => $metrics->expensesByCategory($propertyIds, null, null),
+                'expensesPending' => $modules->enabled('expenses') ? $metrics->pendingExpenses($propertyIds) : [],
+                'expensesByCategory' => $modules->enabled('expenses') ? $metrics->expensesByCategory($propertyIds, null, null) : [],
             ],
             'operations' => [
                 'unitStatus' => $metrics->unitStatusBreakdown($propertyIds),
                 'expiringLeases' => $metrics->expiringLeases($propertyIds, 10),
                 'pendingPayments' => $metrics->pendingVerificationPayments($propertyIds, 10),
-                'maintenanceQueue' => $metrics->maintenanceQueue($propertyIds, null),
+                'maintenanceQueue' => $modules->enabled('maintenance') ? $metrics->maintenanceQueue($propertyIds, null) : $this->noMaintenanceQueue(),
             ],
             'leasing' => [
-                'leasing' => $metrics->leasingBoard($propertyIds, $user->id),
+                'leasing' => $this->leasingBoard($metrics->leasingBoard($propertyIds, $user->id), $modules),
             ],
             'maintenance' => [
-                'maintenanceQueue' => $metrics->maintenanceQueue($propertyIds, $user->id, 20),
+                'maintenanceQueue' => $modules->enabled('maintenance') ? $metrics->maintenanceQueue($propertyIds, $user->id, 20) : $this->noMaintenanceQueue(),
             ],
             default => [],
         };
 
         return $this->ok($payload, 'Dashboard for '.$user->name.'.');
+    }
+
+    /** The queue's own shape with nothing in it, so the screen reads zeros rather than a missing field. */
+    private function noMaintenanceQueue(): array
+    {
+        return [
+            'byStatus' => array_fill_keys(['open', 'assigned', 'in-progress', 'completed', 'tenant-confirmed', 'verified', 'closed'], 0),
+            'byUrgency' => array_fill_keys(['emergency', 'high', 'medium', 'low'], 0),
+            'openCount' => 0,
+            'emergencyCount' => 0,
+            'items' => [],
+        ];
+    }
+
+    /** With Leasing & leads off the board keeps the vacant units (which are core) and shows no listings or leads. */
+    private function leasingBoard(array $board, Modules $modules): array
+    {
+        if ($modules->enabled('leasing')) {
+            return $board;
+        }
+
+        return array_merge($board, [
+            'liveListings' => 0, 'activeLeads' => 0, 'viewingsScheduled' => 0, 'convertedLeads' => 0,
+            'leadFunnel' => array_map(fn () => 0, $board['leadFunnel']), 'recentLeads' => [],
+        ]);
     }
 
     /**
@@ -104,7 +131,7 @@ class DashboardController extends Controller
     {
         return AuditLog::query()
             ->when($propertyIds !== null, fn ($q) => $q->whereIn('propertyId', $propertyIds ?: ['__none__']))
-            ->when(! in_array($user->role, ['admin', 'finance'], true), fn ($q) => $q->where('userId', $user->id))
+            ->when(! ($user->isAdmin() || $user->role === 'finance'), fn ($q) => $q->where('userId', $user->id))
             ->orderByDesc('timestamp')->limit(12)
             ->get(['id', 'action', 'entity', 'entityId', 'userId', 'summary', 'timestamp']);
     }

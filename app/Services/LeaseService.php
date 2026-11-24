@@ -8,6 +8,7 @@ use App\Models\Meter;
 use App\Models\Payment;
 use App\Models\Unit;
 use App\Models\User;
+use App\Support\Modules;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
@@ -188,6 +189,9 @@ class LeaseService extends CrudService
         /** @var Lease $lease */
         $lease = $this->locate($user, $id);
         $this->authorize($user, 'update', $lease);
+
+        abort_if($closingReadings !== [] && ! app(Modules::class)->enabled('utilities'), 422,
+            'The '.Modules::DEFINITIONS['utilities']['label'].' module is turned off, so closing readings cannot be taken.');
 
         $readings = $this->acceptableClosingReadings($lease, $closingReadings);
 

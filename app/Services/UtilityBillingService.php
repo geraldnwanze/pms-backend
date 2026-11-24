@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Models\UtilityBillRun;
 use App\Support\Dates;
 use App\Support\FrontendUrl;
+use App\Support\Modules;
 use App\Support\Recipients;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -470,6 +471,11 @@ class UtilityBillingService
      */
     public function billFinal(User|string $actor, Lease $lease, ?Carbon $today = null): ?Invoice
     {
+        // With the module off nothing is billed. The use stays unbilled and can still be billed within the final-bill window once it is back on.
+        if (! app(Modules::class)->enabled('utilities')) {
+            return null;
+        }
+
         $today = ($today ?? Carbon::today())->copy()->startOfDay();
 
         try {

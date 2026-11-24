@@ -47,6 +47,8 @@ class UserService extends CrudService
 
     protected function prepareForUpdate(User $actor, Model $record, array $data): array
     {
+        $this->guardSuperAdmin($actor, $record, $data);
+
         $data = array_diff_key($data, array_flip(self::VERIFICATION_COLUMNS));
 
         // A different address has not been proven yet.
@@ -68,6 +70,27 @@ class UserService extends CrudService
     protected function afterCreate(User $actor, Model $record, array $data): void
     {
         $this->audit->record($actor, 'create', 'User', $record->id, "Created user {$record->name} ({$record->role})");
+    }
+
+    protected function beforeDelete(User $user, Model $record): void
+    {
+        $this->guardSuperAdmin($user, $record, deleting: true);
+    }
+
+    /**
+     * A superadmin outranks an admin, so only a superadmin may edit a superadmin account at all (otherwise an admin could set its
+     * password and sign in as it). Even they cannot change its role or status, or delete it, through the app: those are done with
+     * `php artisan pms:make-superadmin`, so the people who can switch modules are decided by whoever runs the server.
+     */
+    private function guardSuperAdmin(User $actor, Model $record, array $data = [], bool $deleting = false): void
+    {
+        if (! $record instanceof User || ! $record->isSuperAdmin()) {
+            return;
+        }
+
+        abort_unless($actor->isSuperAdmin(), 403, 'Only a superadmin can change a superadmin account.');
+        abort_if($deleting, 422, 'A superadmin account cannot be deleted here: take the role away first with php artisan pms:make-superadmin --revoke.');
+        abort_if(array_key_exists('role', $data) || array_key_exists('status', $data), 422, "A superadmin's role and status are managed with php artisan pms:make-superadmin.");
     }
 
     protected function afterUpdate(User $actor, Model $record, array $data): void

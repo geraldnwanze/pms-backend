@@ -14,7 +14,7 @@ class ReminderController extends Controller
 {
     use ApiResponses;
 
-    private const CAN_SEND = ['admin', 'owner', 'manager', 'finance'];
+    private const CAN_SEND = ['superadmin', 'admin', 'owner', 'manager', 'finance'];
 
     public function __construct(private ReminderService $reminders, private PropertyScope $scope) {}
 

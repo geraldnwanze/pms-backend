@@ -26,6 +26,7 @@ class AuditService
         string $entity,
         ?string $entityId,
         string $summary,
+        ?string $source = null,
     ): AuditLog {
         $userId = $actor instanceof User ? $actor->id : ($actor ?? 'system');
         $request = request();
@@ -39,8 +40,9 @@ class AuditService
             'userId' => $userId,
             'summary' => $summary,
             'timestamp' => now()->toIso8601String(),
-            'ip' => $request instanceof Request ? $request->ip() : null,
-            'device' => $request instanceof Request ? Str::limit($request->userAgent() ?? 'API', 120, '') : 'API',
+            // `$source` names where a change came from when it did not come from a request (the command line), instead of a made-up address.
+            'ip' => $source !== null ? null : ($request instanceof Request ? $request->ip() : null),
+            'device' => $source ?? ($request instanceof Request ? Str::limit($request->userAgent() ?? 'API', 120, '') : 'API'),
         ]);
     }
 

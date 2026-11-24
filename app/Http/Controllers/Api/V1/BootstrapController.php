@@ -13,6 +13,7 @@ use App\Services\PaystackService;
 use App\Services\PropertyScope;
 use App\Services\SettingsService;
 use App\Support\EntityRegistry;
+use App\Support\Modules;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -29,7 +30,7 @@ class BootstrapController extends Controller
 {
     use ApiResponses;
 
-    public function __invoke(Request $request, PropertyScope $scope, MembershipService $memberships, SettingsService $settings, PaystackService $paystack, MaintenancePayoutService $payouts): JsonResponse
+    public function __invoke(Request $request, PropertyScope $scope, MembershipService $memberships, SettingsService $settings, PaystackService $paystack, MaintenancePayoutService $payouts, Modules $modules): JsonResponse
     {
         $user = $request->user();
         $data = [];
@@ -38,7 +39,9 @@ class BootstrapController extends Controller
             /** @var CrudService $service */
             $service = app($entity['service']);
 
-            $data[$key] = $service->mayAccessCollection($user, 'view')
+            // A module that is turned off sends nothing: its screens are hidden and its data is not shipped.
+            $module = Modules::forResource($key);
+            $data[$key] = (! $module || $modules->enabled($module)) && $service->mayAccessCollection($user, 'view')
                 ? $service->listAll($user)->toArray()
                 : [];
         }
@@ -55,6 +58,7 @@ class BootstrapController extends Controller
             'configured' => $paystack->configured(),
         ]);
         $data['integrations'] = $integrations;
+        $data['modules'] = $modules->states();
         $data['rbac'] = [
             'roles' => config('rbac.roles'),
             'permissions' => config('rbac.permissions'),
@@ -91,7 +95,7 @@ class BootstrapController extends Controller
         // Non-admins never see super-admin accounts, even if one invited them.
         return User::query()
             ->whereIn('id', $ids)
-            ->where('role', '!=', 'admin')
+            ->whereNotIn('role', User::ADMIN_ROLES)
             ->get()
             ->toArray();
     }

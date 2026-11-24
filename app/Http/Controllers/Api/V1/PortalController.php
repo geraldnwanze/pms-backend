@@ -13,6 +13,7 @@ use App\Models\Payment;
 use App\Models\Property;
 use App\Models\Tenant;
 use App\Models\Unit;
+use App\Support\Modules;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -26,7 +27,7 @@ class PortalController extends Controller
 
     private const ACTIVE_LEASE = ['active', 'expiring', 'renewed'];
 
-    public function __invoke(Request $request): JsonResponse
+    public function __invoke(Request $request, Modules $modules): JsonResponse
     {
         $user = $request->user();
         $tenantIds = $user->tenantRecordIds();
@@ -58,12 +59,14 @@ class PortalController extends Controller
         $pendingPaymentsCount = Payment::query()->whereIn('tenantId', $tenantIds)
             ->where('status', 'pending-verification')->count();
 
-        $requests = MaintenanceRequest::query()->whereIn('tenantId', $tenantIds)
-            ->orderByDesc('createdAt')
-            ->get(['id', 'code', 'title', 'category', 'urgency', 'status', 'createdAt']);
+        $requests = $modules->enabled('maintenance')
+            ? MaintenanceRequest::query()->whereIn('tenantId', $tenantIds)
+                ->orderByDesc('createdAt')
+                ->get(['id', 'code', 'title', 'category', 'urgency', 'status', 'createdAt'])
+            : collect();
         $openRequestsCount = $requests->whereNotIn('status', ['verified', 'closed'])->count();
 
-        $notices = Notice::query()
+        $notices = ! $modules->enabled('communications') ? collect() : Notice::query()
             ->whereIn('audience', ['all', 'tenants'])
             ->where(fn ($q) => $q->whereNull('propertyId')
                 ->when($property, fn ($x) => $x->orWhere('propertyId', $property->id)))

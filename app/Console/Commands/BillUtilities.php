@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Console\Concerns\SkipsWhenModuleOff;
 use App\Services\UtilityBillingService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
@@ -9,6 +10,8 @@ use Illuminate\Support\Carbon;
 /** Invoices tenants for the meter use read since each meter was last billed. Runs monthly; safe to re-run. */
 class BillUtilities extends Command
 {
+    use SkipsWhenModuleOff;
+
     protected $signature = 'pms:bill-utilities
         {--dry-run : Show what would be billed without billing it}
         {--date= : Pretend today is this date (YYYY-MM-DD) — not in production}';
@@ -17,6 +20,10 @@ class BillUtilities extends Command
 
     public function handle(UtilityBillingService $billing): int
     {
+        if ($this->moduleIsOff('utilities')) {
+            return self::SUCCESS;
+        }
+
         if ($this->option('date') && app()->environment('production')) {
             $this->error('--date is a testing switch and is disabled in production.');
 

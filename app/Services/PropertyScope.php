@@ -27,7 +27,7 @@ class PropertyScope
     /** @return array<int,string>|null */
     public function visibleIds(User $user): ?array
     {
-        if ($user->role === 'admin') {
+        if ($user->isAdmin()) {
             return null;
         }
 
@@ -60,7 +60,7 @@ class PropertyScope
      */
     public function visibleTenantIds(User $user): ?array
     {
-        if ($user->role === 'admin') {
+        if ($user->isAdmin()) {
             return null;
         }
 
@@ -150,7 +150,7 @@ class PropertyScope
      */
     public function canReachUser(User $actor, string $userId, ?string $propertyId): bool
     {
-        if (User::query()->whereKey($userId)->value('role') === 'admin') {
+        if (in_array(User::query()->whereKey($userId)->value('role'), User::ADMIN_ROLES, true)) {
             return true;
         }
 
