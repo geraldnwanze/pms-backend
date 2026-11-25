@@ -8,6 +8,7 @@ use App\Mail\PasswordResetMail;
 use App\Models\Lease;
 use App\Models\User;
 use App\Services\AuditService;
+use App\Services\CaptchaService;
 use App\Services\EmailVerificationService;
 use App\Support\FrontendUrl;
 use Illuminate\Http\JsonResponse;
@@ -193,6 +194,12 @@ class AuthController extends Controller
             'token' => $token,
             'user' => $user,
         ], 'Signed in.');
+    }
+
+    /** Whether the sign-in pages must show the "I'm not a robot" challenge, and the public key to draw it with. */
+    public function captcha(CaptchaService $captcha): JsonResponse
+    {
+        return $this->ok(['enabled' => $captcha->enabled(), 'siteKey' => $captcha->siteKey()], 'Challenge settings.');
     }
 
     /** One representative account per role, for the demo login screen. Local only. */

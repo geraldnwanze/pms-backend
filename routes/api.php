@@ -28,10 +28,21 @@ use App\Http\Controllers\Api\V1\WebhookController;
 use App\Http\Controllers\Api\V1\WorkflowController;
 use App\Support\Collections;
 use App\Support\EntityRegistry;
+use App\Support\Heartbeat;
 use App\Support\Modules;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', fn () => ['ok' => true, 'time' => now()->toIso8601String()]);
+
+// For an uptime monitor: 200 while the scheduler and the queue worker are both beating, 503 once either has been silent
+// for three minutes. Reveals nothing but which of the two is down.
+Route::get('/health/background', function () {
+    $scheduler = Heartbeat::isAlive(Heartbeat::SCHEDULER);
+    $worker = Heartbeat::isAlive(Heartbeat::WORKER);
+
+    return response()->json(['ok' => $scheduler && $worker, 'scheduler' => $scheduler, 'worker' => $worker],
+        $scheduler && $worker ? 200 : 503);
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -40,11 +51,13 @@ Route::get('/health', fn () => ['ok' => true, 'time' => now()->toIso8601String()
 */
 Route::prefix('v1')->group(function () {
     Route::get('/auth/demo-users', [AuthController::class, 'demoUsers']);
-    Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:auth-register');
-    Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
+    // Whether the "I'm not a robot" challenge is on, and the public key the page needs to draw it.
+    Route::get('/auth/captcha', [AuthController::class, 'captcha']);
+    Route::post('/auth/register', [AuthController::class, 'register'])->middleware(['throttle:auth-register', 'captcha']);
+    Route::post('/auth/login', [AuthController::class, 'login'])->middleware(['throttle:auth-login', 'captcha:password']);
     Route::post('/auth/verify-email', [AuthController::class, 'verifyEmail'])->middleware('throttle:email-verify');
-    Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:auth-recovery');
-    Route::post('/auth/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:auth-recovery');
+    Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword'])->middleware(['throttle:auth-recovery', 'captcha']);
+    Route::post('/auth/reset-password', [AuthController::class, 'resetPassword'])->middleware(['throttle:auth-recovery', 'captcha']);
 
     // Payment-gateway webhooks — unauthenticated, signature-verified in the handler.
     Route::post('/webhooks/paystack', [WebhookController::class, 'paystack']);

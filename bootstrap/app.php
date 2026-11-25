@@ -6,6 +6,7 @@ use App\Http\Middleware\EnsureAccountIsActive;
 use App\Http\Middleware\EnsureDemoUser;
 use App\Http\Middleware\EnsureModuleEnabled;
 use App\Http\Middleware\ForceJsonResponse;
+use App\Http\Middleware\RequireCaptcha;
 use App\Http\Middleware\ResolveDemoUser;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
@@ -38,6 +39,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'account.active' => EnsureAccountIsActive::class,
             'module' => EnsureModuleEnabled::class,
+            'captcha' => RequireCaptcha::class,
             'demo.only' => DemoEnvironmentOnly::class,
             'demo.resolve' => ResolveDemoUser::class,
             'demo.auth' => EnsureDemoUser::class,

@@ -29,3 +29,5 @@ Thumbs.db
 # PMS
 /database/*.sqlite
 /database/*.sqlite-journal
+
+/api.json

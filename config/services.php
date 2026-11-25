@@ -35,6 +35,15 @@ return [
         ],
     ],
 
+    // "I'm not a robot" (Cloudflare Turnstile) on sign-in, register, forgot-password and reset-password. Off unless TURNSTILE_ENABLED is true; once on, a
+    // missing or unverifiable token is refused. See the README ("Bot protection").
+    'turnstile' => [
+        'enabled' => (bool) env('TURNSTILE_ENABLED', false),
+        'site_key' => env('TURNSTILE_SITE_KEY'),
+        'secret_key' => env('TURNSTILE_SECRET_KEY'),
+        'verify_url' => env('TURNSTILE_VERIFY_URL', 'https://challenges.cloudflare.com/turnstile/v0/siteverify'),
+    ],
+
     'paystack' => [
         'secret_key' => env('PAYSTACK_SECRET_KEY'),
         'public_key' => env('PAYSTACK_PUBLIC_KEY'),

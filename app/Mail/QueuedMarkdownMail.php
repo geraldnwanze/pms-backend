@@ -6,6 +6,8 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * Base for every transactional email in the app.
@@ -19,6 +21,13 @@ use Illuminate\Queue\SerializesModels;
 abstract class QueuedMarkdownMail extends Mailable implements ShouldQueue
 {
     use Queueable, SerializesModels;
+
+    /** A mail server hiccup should not lose the message: three attempts, a pause between them, none left hanging. */
+    public $tries = 3;
+
+    public $backoff = [30, 120];
+
+    public $timeout = 30;
 
     /** Markdown view, e.g. `emails.invitation`. Set by the subclass. */
     protected string $template;
@@ -37,5 +46,11 @@ abstract class QueuedMarkdownMail extends Mailable implements ShouldQueue
             ->markdown($this->template, $this->payload + [
                 'appName' => config('app.name'),
             ]);
+    }
+
+    /** Called once every attempt has failed. Leaves a line in the log; the job itself stays in `failed_jobs`. */
+    public function failed(Throwable $e): void
+    {
+        Log::error('Queued email gave up: '.static::class.' — '.$e->getMessage());
     }
 }

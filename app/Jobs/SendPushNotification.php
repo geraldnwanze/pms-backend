@@ -21,6 +21,10 @@ class SendPushNotification implements ShouldQueue
 
     public int $tries = 2;
 
+    public int $backoff = 30;
+
+    public int $timeout = 30;
+
     public function __construct(public string $notificationId) {}
 
     public function handle(WebPushService $push): void

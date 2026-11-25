@@ -4,9 +4,12 @@ namespace App\Providers;
 
 use App\Models\User;
 use App\Policies\EntityPolicy;
+use App\Support\EntityDocs;
 use App\Support\EntityRegistry;
 use App\Support\Modules;
+use Dedoc\Scramble\Scramble;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Foundation\DevCommands;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
@@ -30,6 +33,15 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(User::class, EntityPolicy::class);
 
         $this->configureRateLimiting();
+
+        // The API docs (/docs/api): each generic resource route gets its own title, allowed roles and module.
+        Scramble::configure()->withOperationTransformers(EntityDocs::apply(...));
+
+        // Served in the local environment, and anywhere API_DOCS_PUBLIC=true (a staging site); never otherwise.
+        Gate::define('viewApiDocs', fn ($user = null) => app()->environment('local') || (bool) config('scramble.public'));
+
+        // `php artisan dev` already runs the server and a queue worker; the scheduled work needs its clock too.
+        DevCommands::artisan('schedule:work', 'scheduler');
     }
 
     /**

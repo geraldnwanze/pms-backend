@@ -1,0 +1,17 @@
+# Copy to /etc/systemd/system/, change the paths and user, then:  systemctl enable --now pms-worker
+# After every deploy run `php artisan queue:restart`: the worker finishes its current job and systemd starts it again.
+[Unit]
+Description=PMS queue worker (emails, push notifications)
+After=network.target postgresql.service
+
+[Service]
+User=www-data
+WorkingDirectory=/var/www/pms-backend
+# `--timeout` is 60s and `retry_after` is 90s, so a job is never picked up twice at once.
+ExecStart=/usr/bin/php artisan queue:work --sleep=3 --tries=3 --timeout=60 --max-time=3600
+Restart=always
+RestartSec=3
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

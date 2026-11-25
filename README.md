@@ -37,6 +37,22 @@ frontend's own generator via `npm run dump:seed` there.
 
 ## v1 API
 
+### API documentation (Swagger-style)
+
+[Scramble](https://scramble.dedoc.co) generates interactive OpenAPI docs from the routes, validation rules and controllers, so they stay
+in step with the code. With the app running in the `local` environment:
+
+- **`/docs/api`** — the browsable documentation, with a "Send API Request" panel (paste a Sanctum token as the bearer token);
+- **`/docs/api.json`** — the OpenAPI 3.1 document, or `php artisan scramble:export` to write it to `api.json` (git-ignored).
+
+Outside `local` both return `403`. A staging copy can turn them on with `API_DOCS_PUBLIC=true` (the `viewApiDocs` gate in
+`AppServiceProvider` reads it); leave it off wherever the API is public. Where they are on, `php artisan scramble:cache` stores the
+generated document so the page opens fast (re-run it after each deploy; `scramble:clear` removes it). Only the v1 API is
+documented (`config/scramble.php`): endpoints behind `auth:sanctum` show as needing a bearer token and the rest (sign-in, register, webhooks)
+as public. Generating the document inspects the models, so **the database must be running**. The generic resources (properties, units, tenants,
+…) share one controller, so their bodies are described generally, but each route has its own title, the roles allowed to read or change
+it (from `config/rbac.php`) and its module (`app/Support/EntityDocs.php`). `tests/Feature/Docs` checks that every v1 route appears in the spec.
+
 ### Request / response shape
 
 Every response is an envelope:
@@ -77,6 +93,29 @@ property data. Access comes from **`property_members`**: create a property
 (you become its `owner`) or accept an invitation. Password-reset mail uses
 `MAIL_MAILER=log`; the `reset_url` (`FRONTEND_URL/reset-password`) is returned
 in the response in local/testing so the flow works without SMTP.
+
+### Bot protection ("I'm not a robot")
+
+Sign-in, register, forgot-password and reset-password can require a Cloudflare Turnstile check. It is **off** unless `TURNSTILE_ENABLED=true`; once on, a request
+without a `captchaToken`, or with one Cloudflare does not confirm, is refused with `422` (`errors.captchaToken`). It fails **closed**: if Cloudflare cannot
+be reached, answers with an error, or the secret key is missing, the request is refused rather than let through.
+
+```env
+TURNSTILE_ENABLED=true
+TURNSTILE_SITE_KEY=...     # public: sent to the page so it can draw the widget
+TURNSTILE_SECRET_KEY=...   # private: only ever sent to Cloudflare
+```
+
+Create a free Turnstile widget (Managed mode) in the Cloudflare dashboard (Turnstile) and list your domains there. For local work Cloudflare publishes
+test keys that always pass (`1x00000000000000000000AA` / `1x0000000000000000000000000000000AA`); they are listed, commented out, in `.env.example` and are set in a fresh dev
+`.env`. Never ship them.
+
+- `GET /api/v1/auth/captcha` — `{ enabled, siteKey }`, so the app learns whether to show the widget (and which key) from the server: changing keys or
+  switching it on needs no frontend rebuild. The secret is never returned.
+- The challenge is checked **before** the password, so a refusal says nothing about whether the password was right, and the existing throttles still apply.
+- Not asked for: the local-only passwordless demo sign-in (it is refused outside local anyway), and verify-email, which already needs an
+  emailed secret token. Signed-in requests are never asked.
+- Tests run with it off (`phpunit.xml`); `tests/Feature/Security/CaptchaTest.php` turns it on and fakes Cloudflare.
 
 ### Team membership & invitations
 
@@ -228,6 +267,41 @@ owns), then gate what the REST loop does not cover: put `->middleware('module:<k
 its scheduled commands use `SkipsWhenModuleOff`, and trim it from any dashboard or portal payload. The tests in
 `tests/Feature/Modules` fail if a registry entry names a resource that does not exist or is claimed twice, or if a gated route is
 missing from the list in `ModuleGatingTest`. The frontend half is in its README.
+
+### Background work: the queue worker and the scheduler
+
+Two processes run beside the web server, and both are needed:
+
+- **Queue worker** — sends every email (they are queued, never sent during a request) and browser push notifications.
+- **Scheduler** — fires the daily and monthly jobs (all times server time): 03:00 prune old failed jobs · 06:00 generate
+  invoices · 06:15 on the 1st bill utilities · 06:30 refresh statuses · 06:45 late fees · 07:00 rent reminders ·
+  07:15 lease-expiry reminders · 07:30 auto-debit. List them with `php artisan schedule:list`.
+
+**Development:** `composer dev` (`php artisan dev`) starts the server, the queue worker, the scheduler, Reverb, logs and
+Vite together. Nothing else to run.
+
+**Anywhere else** (a server, a container) run these two, each kept alive by your process manager. Ready-made files are in
+`deploy/supervisor/pms.conf` and `deploy/systemd/` (copy, then change the paths and user); a container restart policy works too:
+
+```bash
+php artisan queue:work --tries=3 --max-time=3600     # restarts itself hourly; run `php artisan queue:restart` after each deploy
+php artisan schedule:work                            # or a cron line: * * * * * cd /path && php artisan schedule:run
+```
+
+**Is it running?** `php artisan pms:status` shows the last time the scheduler ticked and the last time a worker ran a
+job, plus how many jobs are waiting or failed. It exits 1 if either has been silent for more than three minutes, so a
+monitor or a cron mail can use it. (The scheduler queues a tiny job every minute; a worker running it is the proof.)
+
+**Being told:** every five minutes the scheduler checks the worker. If it has stopped, the superadmins get an in-app
+notification ("The queue worker has stopped"), and another when it is back; they also get one when jobs start failing
+(again only when there are more). The scheduler cannot report on itself, so point an uptime monitor at
+`GET /api/health/background`: it answers 200 while both are beating and 503 when either is not.
+
+**When a job fails:** emails are tried three times, 30 s then 2 min apart (push twice, 30 s apart); after that the job
+stays in `failed_jobs` for a week and a line is written to the log. `php artisan queue:failed` lists them,
+`queue:retry all` runs them again.
+
+A module that is turned off pauses its own scheduled commands (see above); the heartbeat and housekeeping are never paused.
 
 ### Architecture
 
